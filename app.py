@@ -2,7 +2,7 @@ import streamlit as st
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from src.chains import answer_query
+from src.chains import run_backend_query
 from src.config import get_settings
 
 
@@ -44,7 +44,10 @@ def render_latest_turn() -> None:
 
     with st.chat_message("assistant"):
         st.write(latest_turn["answer"])
-        if not latest_turn["used_context"]:
+        if latest_turn["tool_result"]:
+            with st.expander("Tool Result"):
+                st.json(latest_turn["tool_result"])
+        if not latest_turn["used_context"] and not latest_turn["tool_result"]:
             st.caption("This response used the no-context fallback because no relevant chunks were retrieved.")
         if latest_turn["sources"]:
             with st.expander("Sources"):
@@ -70,7 +73,7 @@ def main() -> None:
 
     try:
         with st.spinner("Generating answer..."):
-            result = answer_query(
+            result = run_backend_query(
                 query=question,
                 vector_store=get_vector_store(),
                 chat_model=get_chat_model(),
@@ -84,6 +87,11 @@ def main() -> None:
         "answer": result.answer,
         "used_context": result.used_context,
         "sources": result.answer_sources,
+        "tool_result": (
+            result.tool_result.model_dump()
+            if result.tool_result is not None
+            else None
+        ),
     }
     st.rerun()
 

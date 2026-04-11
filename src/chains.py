@@ -4,6 +4,7 @@ from typing import Protocol
 
 from src.retrieval import retrieve_chunks
 from src.schemas import AnswerResult, RetrievalRequest, RetrievalResult
+from src.tools import format_tool_answer, maybe_invoke_tool
 
 
 NO_CONTEXT_FALLBACK = (
@@ -50,6 +51,33 @@ def answer_query(
         used_context=True,
         retrieval=retrieval_result,
         answer_sources=retrieval_result.sources,
+        tool_result=None,
+    )
+
+
+def run_backend_query(
+    *,
+    query: str,
+    vector_store,
+    chat_model: ChatModelLike,
+    top_k: int = 3,
+) -> AnswerResult:
+    request = RetrievalRequest(query=query, top_k=top_k)
+    tool_result = maybe_invoke_tool(request.query)
+    if tool_result is not None:
+        return AnswerResult(
+            answer=format_tool_answer(tool_result),
+            used_context=False,
+            retrieval=None,
+            answer_sources=[],
+            tool_result=tool_result,
+        )
+
+    return answer_query(
+        query=request.query,
+        vector_store=vector_store,
+        chat_model=chat_model,
+        top_k=top_k,
     )
 
 
