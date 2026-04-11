@@ -61,6 +61,7 @@ def render_latest_turn() -> None:
         with st.chat_message("assistant"):
             st.caption(f"Response type: {get_response_type_label(turn)}")
             st.write(turn["answer"])
+            st.caption(format_request_usage_label(turn))
             if turn["tool_result"]:
                 with st.expander("Tool Result"):
                     st.json(turn["tool_result"])
@@ -113,6 +114,7 @@ def build_turn_record(query: str, result: AnswerResult) -> dict[str, object]:
             if result.tool_result is not None
             else None
         ),
+        "usage": result.usage.model_dump() if result.usage is not None else None,
     }
 
 
@@ -122,6 +124,70 @@ def get_response_type_label(turn: dict[str, object]) -> str:
     if turn["used_context"]:
         return "Grounded answer"
     return "No-context fallback"
+
+
+def format_request_usage_label(turn: dict[str, object]) -> str:
+    if turn["tool_result"] is not None or turn["used_context"] is False:
+        return "No LLM usage"
+
+    usage = turn.get("usage")
+    if not isinstance(usage, dict):
+        return "Usage unavailable"
+
+    model_name = usage.get("model_name") or "unknown model"
+    cost = usage.get("estimated_cost_usd")
+    cost_text = (
+        f"${cost:.6f}"
+        if isinstance(cost, int | float)
+        else "Cost unavailable"
+    )
+    return (
+        f"LLM usage: {model_name} | "
+        f"{usage['input_tokens']} in / {usage['output_tokens']} out / "
+        f"{usage['total_tokens']} total | {cost_text}"
+    )
+
+
+def build_session_usage_totals(
+    conversation_history: list[dict[str, object]],
+) -> dict[str, int | float | None] | None:
+    usage_entries = [
+        turn["usage"]
+        for turn in conversation_history
+        if isinstance(turn.get("usage"), dict)
+    ]
+    if not usage_entries:
+        return None
+
+    estimated_costs = [entry.get("estimated_cost_usd") for entry in usage_entries]
+    return {
+        "request_count": len(usage_entries),
+        "input_tokens": sum(entry["input_tokens"] for entry in usage_entries),
+        "output_tokens": sum(entry["output_tokens"] for entry in usage_entries),
+        "total_tokens": sum(entry["total_tokens"] for entry in usage_entries),
+        "estimated_cost_usd": (
+            round(sum(cost for cost in estimated_costs if isinstance(cost, int | float)), 6)
+            if all(isinstance(cost, int | float) for cost in estimated_costs)
+            else None
+        ),
+    }
+
+
+def format_session_usage_label(conversation_history: list[dict[str, object]]) -> str:
+    totals = build_session_usage_totals(conversation_history)
+    if totals is None:
+        return "No tracked LLM usage yet."
+
+    cost = totals["estimated_cost_usd"]
+    cost_text = (
+        f"${cost:.6f}"
+        if isinstance(cost, int | float)
+        else "Cost unavailable"
+    )
+    return (
+        f"{totals['request_count']} requests | "
+        f"{totals['total_tokens']} total tokens | {cost_text}"
+    )
 
 
 def get_help_content() -> dict[str, list[str] | str]:
@@ -198,6 +264,8 @@ def render_help_section(conversation_history: list[dict[str, object]]) -> None:
             disabled=not conversation_history,
             use_container_width=True,
         )
+        st.caption("Session LLM usage (tracked)")
+        st.caption(format_session_usage_label(conversation_history))
 
         with st.expander("Help & Guide", expanded=False):
             st.write(help_content["helps_with"])

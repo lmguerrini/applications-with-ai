@@ -14,13 +14,20 @@ from src.schemas import (
 
 
 class StubChatModel:
-    def __init__(self, response_text: str) -> None:
+    def __init__(self, response_text: str, *, model_name: str = "gpt-4.1-mini") -> None:
         self.response_text = response_text
+        self.model_name = model_name
         self.prompts: list[str] = []
+        self.response_metadata: dict[str, object] | None = None
+        self.usage_metadata: dict[str, int] | None = None
 
     def invoke(self, prompt: str) -> SimpleNamespace:
         self.prompts.append(prompt)
-        return SimpleNamespace(content=self.response_text)
+        return SimpleNamespace(
+            content=self.response_text,
+            response_metadata=self.response_metadata,
+            usage_metadata=self.usage_metadata,
+        )
 
 
 def test_answer_query_returns_fallback_without_model_call(monkeypatch) -> None:
@@ -49,6 +56,7 @@ def test_answer_query_returns_fallback_without_model_call(monkeypatch) -> None:
     assert result.answer_sources == []
     assert model.prompts == []
     assert result.tool_result is None
+    assert result.usage is None
 
 
 def test_build_grounded_prompt_includes_query_context_and_sources() -> None:
@@ -131,6 +139,11 @@ def test_answer_query_returns_structured_output(monkeypatch) -> None:
     model = StubChatModel(
         "Use the retrieved source title and metadata next to the answer in Streamlit."
     )
+    model.usage_metadata = {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "total_tokens": 17,
+    }
 
     result = chains.answer_query(
         query="How should I show sources in Streamlit?",
@@ -145,6 +158,12 @@ def test_answer_query_returns_structured_output(monkeypatch) -> None:
     assert result.used_context is True
     assert result.retrieval == retrieval_result
     assert result.answer_sources == retrieval_result.sources
+    assert result.usage is not None
+    assert result.usage.model_name == "gpt-4.1-mini"
+    assert result.usage.input_tokens == 12
+    assert result.usage.output_tokens == 5
+    assert result.usage.total_tokens == 17
+    assert result.usage.estimated_cost_usd == 0.000013
     assert len(model.prompts) == 1
     assert result.tool_result is None
 
@@ -169,6 +188,7 @@ def test_run_backend_query_routes_tool_request_without_answer_call(monkeypatch) 
     assert "Estimated total OpenAI cost" in result.answer
     assert result.retrieval is None
     assert result.answer_sources == []
+    assert result.usage is None
 
 
 def test_run_backend_query_returns_tool_validation_error_without_rag_fallback(monkeypatch) -> None:
@@ -188,6 +208,7 @@ def test_run_backend_query_returns_tool_validation_error_without_rag_fallback(mo
     assert result.tool_result.tool_output is None
     assert "supported model name" in result.answer
     assert result.retrieval is None
+    assert result.usage is None
 
 
 def test_run_backend_query_routes_retrieval_config_request(monkeypatch) -> None:
@@ -206,6 +227,7 @@ def test_run_backend_query_routes_retrieval_config_request(monkeypatch) -> None:
     assert result.tool_result.tool_name == "recommend_retrieval_config"
     assert result.tool_result.tool_error is None
     assert "Recommended retrieval settings" in result.answer
+    assert result.usage is None
 
 
 def test_run_backend_query_keeps_normal_answer_flow(monkeypatch) -> None:
@@ -221,6 +243,7 @@ def test_run_backend_query_keeps_normal_answer_flow(monkeypatch) -> None:
         ),
         answer_sources=["source-1"],
         tool_result=None,
+        usage=None,
     )
 
     def fake_answer_query(**kwargs):
@@ -296,3 +319,101 @@ Use session state carefully when debugging reruns in a retrieval app.
     assert result.retrieval is not None
     assert result.retrieval.chunks == []
     assert model.prompts == []
+    assert result.usage is None
+
+
+def test_answer_query_extracts_usage_from_response_metadata_token_usage(monkeypatch) -> None:
+    retrieval_result = RetrievalResult(
+        rewritten_query="streamlit source metadata",
+        applied_filters=RetrievalFilters(topic="streamlit", library="streamlit"),
+        used_fallback=False,
+        chunks=[
+            RetrievedChunk.model_validate(
+                {
+                    "content": "Show source titles next to the answer in Streamlit.",
+                    "metadata": {
+                        "doc_id": "streamlit-chat-patterns",
+                        "source_path": "data/raw/streamlit_chat_patterns.md",
+                        "title": "Streamlit Chat Patterns",
+                        "topic": "streamlit",
+                        "library": "streamlit",
+                        "doc_type": "example",
+                        "difficulty": "intermediate",
+                        "error_family": "ui",
+                        "chunk_index": 0,
+                    },
+                }
+            )
+        ],
+        sources=["Streamlit Chat Patterns"],
+    )
+
+    def fake_retrieve_chunks(*, vector_store, request):
+        return retrieval_result
+
+    monkeypatch.setattr(chains, "retrieve_chunks", fake_retrieve_chunks)
+    model = StubChatModel("Use sources in the UI.")
+    model.response_metadata = {
+        "model_name": "gpt-4.1-mini",
+        "token_usage": {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        },
+    }
+
+    result = chains.answer_query(
+        query="How should I show sources in Streamlit?",
+        vector_store=object(),
+        chat_model=model,
+    )
+
+    assert result.usage is not None
+    assert result.usage.model_name == "gpt-4.1-mini"
+    assert result.usage.input_tokens == 11
+    assert result.usage.output_tokens == 7
+    assert result.usage.total_tokens == 18
+    assert result.usage.estimated_cost_usd == 0.000016
+
+
+def test_answer_query_returns_none_usage_when_metadata_is_missing(monkeypatch) -> None:
+    retrieval_result = RetrievalResult(
+        rewritten_query="streamlit source metadata",
+        applied_filters=RetrievalFilters(topic="streamlit"),
+        used_fallback=False,
+        chunks=[
+            RetrievedChunk.model_validate(
+                {
+                    "content": "Show source titles next to the answer in Streamlit.",
+                    "metadata": {
+                        "doc_id": "streamlit-chat-patterns",
+                        "source_path": "data/raw/streamlit_chat_patterns.md",
+                        "title": "Streamlit Chat Patterns",
+                        "topic": "streamlit",
+                        "library": "streamlit",
+                        "doc_type": "example",
+                        "difficulty": "intermediate",
+                        "error_family": "ui",
+                        "chunk_index": 0,
+                    },
+                }
+            )
+        ],
+        sources=["Streamlit Chat Patterns"],
+    )
+
+    def fake_retrieve_chunks(*, vector_store, request):
+        return retrieval_result
+
+    monkeypatch.setattr(chains, "retrieve_chunks", fake_retrieve_chunks)
+    model = StubChatModel("Use sources in the UI.")
+
+    result = chains.answer_query(
+        query="How should I show sources in Streamlit?",
+        vector_store=object(),
+        chat_model=model,
+    )
+
+    assert result.used_context is True
+    assert result.answer == "Use sources in the UI."
+    assert result.usage is None

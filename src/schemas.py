@@ -180,9 +180,25 @@ class ToolInvocationResult(BaseModel):
     tool_error: str | None = None
 
 
+class RequestUsage(BaseModel):
+    model_name: str | None = None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float | None = None
+
+    @field_validator("input_tokens", "output_tokens", "total_tokens")
+    @classmethod
+    def validate_token_counts(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("Token counts must be zero or greater.")
+        return value
+
+
 class AnswerResult(BaseModel):
     answer: str
     used_context: bool
     retrieval: RetrievalResult | None
     answer_sources: list[str]
     tool_result: ToolInvocationResult | None = None
+    usage: RequestUsage | None = None
