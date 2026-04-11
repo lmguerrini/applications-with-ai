@@ -1,12 +1,26 @@
+from __future__ import annotations
+
+import time
+
 import streamlit as st
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from src.chains import run_backend_query
 from src.config import get_settings
+from src.logger import configure_logging, get_logger
+from src.rate_limit import apply_rate_limit
 
 
 DEFAULT_CHAT_MODEL = "gpt-4.1-mini"
+PREVIEW_LENGTH = 80
+
+
+class AppValidationError(ValueError):
+    pass
+
+
+LOGGER = get_logger(__name__)
 
 
 @st.cache_resource
@@ -55,7 +69,42 @@ def render_latest_turn() -> None:
                     st.write(f"- {source}")
 
 
+def validate_query(raw_query: str, *, max_length: int) -> str:
+    cleaned = raw_query.strip()
+    if not cleaned:
+        raise AppValidationError("Enter a question before sending a request.")
+    if len(cleaned) > max_length:
+        raise AppValidationError(
+            f"Questions must be {max_length} characters or fewer."
+        )
+    return cleaned
+
+
+def build_safe_log_metadata(query: str) -> dict[str, object]:
+    preview = query[:PREVIEW_LENGTH].replace("\n", " ").strip()
+    return {
+        "query_length": len(query),
+        "query_preview": preview,
+    }
+
+
+def get_user_facing_error_message(exc: Exception) -> str:
+    message = str(exc)
+    if isinstance(exc, AppValidationError):
+        return message
+    if "OPENAI_API_KEY" in message:
+        return "OpenAI is not configured yet. Add OPENAI_API_KEY and try again."
+    if "Chroma vector store is unavailable" in message or "Chroma vector store is empty" in message:
+        return "The local knowledge base is not ready. Build the Chroma index before asking questions."
+    if "Connection error" in message:
+        return "The AI backend could not be reached. Please try again in a moment."
+    return "Something went wrong while processing your request. Please try again."
+
+
 def main() -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
     st.set_page_config(page_title="RAG Assistant", page_icon=":speech_balloon:")
     st.title("RAG Assistant")
     st.write(
@@ -64,6 +113,8 @@ def main() -> None:
 
     if "latest_turn" not in st.session_state:
         st.session_state["latest_turn"] = None
+    if "request_timestamps" not in st.session_state:
+        st.session_state["request_timestamps"] = []
 
     render_latest_turn()
 
@@ -71,19 +122,70 @@ def main() -> None:
     if not question:
         return
 
-    try:
-        with st.spinner("Generating answer..."):
-            result = run_backend_query(
-                query=question,
-                vector_store=get_vector_store(),
-                chat_model=get_chat_model(),
+    with st.status("Handling request...", expanded=True) as status:
+        try:
+            status.write("Validating request")
+            validated_query = validate_query(
+                question,
+                max_length=settings.max_query_length,
             )
-    except Exception as exc:
-        st.error(str(exc))
-        return
+            safe_metadata = build_safe_log_metadata(validated_query)
+            LOGGER.info("request_received %s", safe_metadata)
+            status.write("Checking rate limit")
+            rate_limit_result = apply_rate_limit(
+                st.session_state["request_timestamps"],
+                now=time.time(),
+                max_requests=settings.rate_limit_request_count,
+                window_seconds=settings.rate_limit_window_seconds,
+            )
+            st.session_state["request_timestamps"] = rate_limit_result.updated_timestamps
+            if not rate_limit_result.allowed:
+                LOGGER.warning("request_rate_limited %s", safe_metadata)
+                status.update(label="Rate limit exceeded", state="error")
+                st.warning(
+                    "Too many requests in a short period. "
+                    f"Wait about {rate_limit_result.retry_after_seconds} seconds and try again."
+                )
+                return
+
+            status.write("Loading resources")
+            vector_store = get_vector_store()
+            chat_model = get_chat_model()
+            status.write("Processing request")
+            result = run_backend_query(
+                query=validated_query,
+                vector_store=vector_store,
+                chat_model=chat_model,
+            )
+            status.update(label="Request completed", state="complete")
+        except AppValidationError as exc:
+            LOGGER.info(
+                "request_rejected %s",
+                build_safe_log_metadata(question.strip()),
+            )
+            status.update(label="Request rejected", state="error")
+            st.warning(get_user_facing_error_message(exc))
+            return
+        except Exception as exc:
+            LOGGER.exception("backend_error %s", safe_metadata if "safe_metadata" in locals() else {})
+            status.update(label="Request failed", state="error")
+            st.error(get_user_facing_error_message(exc))
+            return
+
+    path = "tool" if result.tool_result is not None else "rag"
+    if result.used_context is False and result.tool_result is None:
+        path = "fallback"
+    LOGGER.info(
+        "request_completed %s",
+        {
+            **safe_metadata,
+            "path": path,
+            "source_count": len(result.answer_sources),
+        },
+    )
 
     st.session_state["latest_turn"] = {
-        "query": question,
+        "query": validated_query,
         "answer": result.answer,
         "used_context": result.used_context,
         "sources": result.answer_sources,

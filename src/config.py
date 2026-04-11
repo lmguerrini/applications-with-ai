@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     raw_data_dir: Path = Field(default=Path("data/raw"), alias="RAW_DATA_DIR")
     chunk_size: int = Field(default=800, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=120, alias="CHUNK_OVERLAP")
+    max_query_length: int = Field(default=500, alias="MAX_QUERY_LENGTH")
+    rate_limit_request_count: int = Field(default=5, alias="RATE_LIMIT_REQUEST_COUNT")
+    rate_limit_window_seconds: int = Field(default=60, alias="RATE_LIMIT_WINDOW_SECONDS")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     model_config = SettingsConfigDict(
         env_file=".env",
