@@ -147,9 +147,58 @@ def get_help_content() -> dict[str, list[str] | str]:
     }
 
 
-def render_help_section() -> None:
+def build_conversation_markdown(conversation_history: list[dict[str, object]]) -> str:
+    lines = ["# Conversation Export", ""]
+    if not conversation_history:
+        lines.append("_No conversation history available._")
+        return "\n".join(lines)
+
+    for index, turn in enumerate(conversation_history, start=1):
+        lines.extend(
+            [
+                f"## Turn {index}",
+                "",
+                f"**User question:** {turn['query']}",
+                "",
+                f"**Response type:** {get_response_type_label(turn)}",
+                "",
+                f"**Assistant answer:** {turn['answer']}",
+                "",
+            ]
+        )
+
+        if turn["sources"]:
+            lines.append("**Sources:**")
+            for source in turn["sources"]:
+                lines.append(f"- {source}")
+            lines.append("")
+
+        if turn["tool_result"]:
+            lines.append("**Tool result:**")
+            for key, value in turn["tool_result"].items():
+                lines.append(f"- {key}: {value}")
+            lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def render_help_section(conversation_history: list[dict[str, object]]) -> None:
     help_content = get_help_content()
     with st.sidebar:
+        st.subheader("Chat Controls")
+        if st.button("Clear chat", use_container_width=True):
+            st.session_state["conversation_history"] = []
+            st.rerun()
+
+        st.download_button(
+            "Export conversation (.md)",
+            data=build_conversation_markdown(conversation_history),
+            file_name="conversation_export.md",
+            mime="text/markdown",
+            disabled=not conversation_history,
+            use_container_width=True,
+        )
+
         with st.expander("Help & Guide", expanded=False):
             st.write(help_content["helps_with"])
             st.caption("Out of scope")
@@ -171,12 +220,13 @@ def main() -> None:
     st.write(
         "Ask about LangChain-based RAG application development with Chroma and Streamlit."
     )
-    render_help_section()
 
     if "conversation_history" not in st.session_state:
         st.session_state["conversation_history"] = []
     if "request_timestamps" not in st.session_state:
         st.session_state["request_timestamps"] = []
+
+    render_help_section(st.session_state["conversation_history"])
 
     render_latest_turn()
 
