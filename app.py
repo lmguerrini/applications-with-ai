@@ -10,6 +10,7 @@ from src.chains import run_backend_query
 from src.config import get_settings
 from src.logger import configure_logging, get_logger
 from src.rate_limit import apply_rate_limit
+from src.schemas import AnswerResult
 
 
 DEFAULT_CHAT_MODEL = "gpt-4.1-mini"
@@ -49,24 +50,24 @@ def get_chat_model() -> ChatOpenAI:
 
 
 def render_latest_turn() -> None:
-    latest_turn = st.session_state.get("latest_turn")
-    if not latest_turn:
+    conversation_history = st.session_state.get("conversation_history", [])
+    if not conversation_history:
         return
 
-    with st.chat_message("user"):
-        st.write(latest_turn["query"])
+    for turn in conversation_history:
+        with st.chat_message("user"):
+            st.write(turn["query"])
 
-    with st.chat_message("assistant"):
-        st.write(latest_turn["answer"])
-        if latest_turn["tool_result"]:
-            with st.expander("Tool Result"):
-                st.json(latest_turn["tool_result"])
-        if not latest_turn["used_context"] and not latest_turn["tool_result"]:
-            st.caption("This response used the no-context fallback because no relevant chunks were retrieved.")
-        if latest_turn["sources"]:
-            with st.expander("Sources"):
-                for source in latest_turn["sources"]:
-                    st.write(f"- {source}")
+        with st.chat_message("assistant"):
+            st.caption(f"Response type: {get_response_type_label(turn)}")
+            st.write(turn["answer"])
+            if turn["tool_result"]:
+                with st.expander("Tool Result"):
+                    st.json(turn["tool_result"])
+            if turn["sources"]:
+                with st.expander("Sources"):
+                    for source in turn["sources"]:
+                        st.write(f"- {source}")
 
 
 def validate_query(raw_query: str, *, max_length: int) -> str:
@@ -101,6 +102,66 @@ def get_user_facing_error_message(exc: Exception) -> str:
     return "Something went wrong while processing your request. Please try again."
 
 
+def build_turn_record(query: str, result: AnswerResult) -> dict[str, object]:
+    return {
+        "query": query,
+        "answer": result.answer,
+        "used_context": result.used_context,
+        "sources": result.answer_sources,
+        "tool_result": (
+            result.tool_result.model_dump()
+            if result.tool_result is not None
+            else None
+        ),
+    }
+
+
+def get_response_type_label(turn: dict[str, object]) -> str:
+    if turn["tool_result"]:
+        return "Tool result"
+    if turn["used_context"]:
+        return "Grounded answer"
+    return "No-context fallback"
+
+
+def get_help_content() -> dict[str, list[str] | str]:
+    return {
+        "helps_with": (
+            "LangChain-based RAG application design, Chroma retrieval decisions, "
+            "Streamlit integration patterns, and the built-in domain tools."
+        ),
+        "out_of_scope": (
+            "General programming help, unrelated topics, and broad questions outside "
+            "LangChain, Chroma, Streamlit, and this app's domain."
+        ),
+        "example_questions": [
+            "How should I persist and rebuild the Chroma index locally?",
+            "How should I display retrieved sources in a Streamlit chat interface?",
+            "Estimate OpenAI cost: model=gpt-4.1-mini, input_tokens=1000, output_tokens=500, num_calls=3",
+        ],
+        "response_types": [
+            "Grounded answer: generated from retrieved knowledge-base context.",
+            "Tool result: returned by one structured rule-based tool.",
+            "No-context fallback: shown when the system cannot find usable domain context.",
+        ],
+    }
+
+
+def render_help_section() -> None:
+    help_content = get_help_content()
+    with st.sidebar:
+        with st.expander("Help & Guide", expanded=False):
+            st.write(help_content["helps_with"])
+            st.caption("Out of scope")
+            st.write(help_content["out_of_scope"])
+            st.caption("Example questions")
+            for question in help_content["example_questions"]:
+                st.write(f"- {question}")
+            st.caption("How to read responses")
+            for item in help_content["response_types"]:
+                st.write(f"- {item}")
+
+
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -110,9 +171,10 @@ def main() -> None:
     st.write(
         "Ask about LangChain-based RAG application development with Chroma and Streamlit."
     )
+    render_help_section()
 
-    if "latest_turn" not in st.session_state:
-        st.session_state["latest_turn"] = None
+    if "conversation_history" not in st.session_state:
+        st.session_state["conversation_history"] = []
     if "request_timestamps" not in st.session_state:
         st.session_state["request_timestamps"] = []
 
@@ -184,17 +246,9 @@ def main() -> None:
         },
     )
 
-    st.session_state["latest_turn"] = {
-        "query": validated_query,
-        "answer": result.answer,
-        "used_context": result.used_context,
-        "sources": result.answer_sources,
-        "tool_result": (
-            result.tool_result.model_dump()
-            if result.tool_result is not None
-            else None
-        ),
-    }
+    st.session_state["conversation_history"].append(
+        build_turn_record(validated_query, result)
+    )
     st.rerun()
 
 
