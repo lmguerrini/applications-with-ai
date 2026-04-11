@@ -103,6 +103,10 @@ def retrieve_chunks(
             k=request.top_k,
         )
 
+    documents = _filter_usable_documents(
+        documents=documents,
+        rewritten_query=rewritten_query,
+    )
     retrieved_chunks = [_to_retrieved_chunk(document) for document in documents]
     return RetrievalResult(
         rewritten_query=rewritten_query,
@@ -176,6 +180,44 @@ def _normalize_query(query: str) -> str:
     request = RetrievalRequest(query=query)
     normalized = NON_WORD_PATTERN.sub(" ", request.query.lower())
     return WHITESPACE_PATTERN.sub(" ", normalized).strip()
+
+
+def _filter_usable_documents(
+    *,
+    documents: list[Document],
+    rewritten_query: str,
+) -> list[Document]:
+    query_tokens = _meaningful_tokens(rewritten_query)
+    if not query_tokens:
+        return documents
+
+    usable_documents: list[Document] = []
+    for document in documents:
+        document_tokens = _document_tokens(document)
+        overlap_count = len(query_tokens & document_tokens)
+        minimum_overlap = 1 if len(query_tokens) <= 2 else 2
+        if overlap_count >= minimum_overlap:
+            usable_documents.append(document)
+    return usable_documents
+
+
+def _document_tokens(document: Document) -> set[str]:
+    metadata = document.metadata
+    metadata_text = " ".join(
+        str(metadata.get(key, ""))
+        for key in ("title", "topic", "library", "doc_type", "error_family")
+        if metadata.get(key)
+    )
+    return _meaningful_tokens(f"{document.page_content} {metadata_text}")
+
+
+def _meaningful_tokens(text: str) -> set[str]:
+    normalized = _normalize_query(text)
+    return {
+        token
+        for token in normalized.split()
+        if token not in STOP_WORDS and len(token) > 2
+    }
 
 
 def _infer_single_match(

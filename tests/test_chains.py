@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
+from langchain_core.embeddings.fake import FakeEmbeddings
+
 from src import chains
+from src.config import Settings
+from src.knowledge_base import build_index
 from src.schemas import (
     AnswerResult,
     RetrievalFilters,
@@ -231,3 +235,64 @@ def test_run_backend_query_keeps_normal_answer_flow(monkeypatch) -> None:
     )
 
     assert result == expected
+
+
+def test_answer_query_uses_no_context_fallback_for_weak_retrieval(tmp_path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    chroma_dir = tmp_path / "chroma_db"
+
+    (raw_dir / "chroma_persistence.md").write_text(
+        """---
+title: Chroma Persistence Guide
+topic: chroma
+library: chroma
+doc_type: how_to
+difficulty: intro
+error_family: persistence
+---
+Use a persistent Chroma directory when you want local retrieval data to survive between runs.
+Rebuild the collection if you need a clean index without duplicate chunks.
+""",
+        encoding="utf-8",
+    )
+    (raw_dir / "streamlit_debug.md").write_text(
+        """---
+title: Streamlit Debugging Example
+topic: streamlit
+library: streamlit
+doc_type: example
+difficulty: intermediate
+error_family: ui
+---
+Streamlit chat interfaces should show source metadata next to the answer.
+Use session state carefully when debugging reruns in a retrieval app.
+""",
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        RAW_DATA_DIR=raw_dir,
+        CHROMA_PERSIST_DIR=chroma_dir,
+        CHROMA_COLLECTION_NAME="weak_retrieval_chain_test",
+        CHUNK_SIZE=250,
+        CHUNK_OVERLAP=20,
+    )
+    vector_store = build_index(
+        settings=settings,
+        embeddings=FakeEmbeddings(size=32),
+    )
+    model = StubChatModel("This should not be used.")
+
+    result = chains.answer_query(
+        query="What is the capital of France?",
+        vector_store=vector_store,
+        chat_model=model,
+    )
+
+    assert result.answer == chains.NO_CONTEXT_FALLBACK
+    assert result.used_context is False
+    assert result.answer_sources == []
+    assert result.retrieval is not None
+    assert result.retrieval.chunks == []
+    assert model.prompts == []

@@ -1,0 +1,62 @@
+[
+  {
+    "question": "How should I persist and rebuild the Chroma index locally?",
+    "expected_source_titles": [
+      "Chroma Persistence and Reindexing Guide"
+    ],
+    "expected_keywords": [
+      "chroma",
+      "persist",
+      "collection"
+    ],
+    "expect_context": true
+  },
+  {
+    "question": "How should I display retrieved sources in a Streamlit chat interface?",
+    "expected_source_titles": [
+      "Streamlit Chat Patterns for RAG Interfaces"
+    ],
+    "expected_keywords": [
+      "streamlit",
+      "sources",
+      "chat"
+    ],
+    "expect_context": true
+  },
+  {
+    "question": "Why should a small LangChain RAG application avoid a complex agent at first?",
+    "expected_source_titles": [
+      "LangChain Retrieval Patterns for Small RAG Apps"
+    ],
+    "expected_keywords": [
+      "langchain",
+      "retrieval",
+      "agent"
+    ],
+    "expect_context": true
+  },
+  {
+    "question": "How should I implement rate limiting for this assistant?",
+    "expected_source_titles": [],
+    "expected_keywords": [],
+    "expect_context": false
+  },
+  {
+    "question": "Why should metadata fields make filtered retrieval easier to implement?",
+    "expected_source_titles": [
+      "Chroma Persistence and Reindexing Guide"
+    ],
+    "expected_keywords": [
+      "metadata",
+      "filtered",
+      "retrieval"
+    ],
+    "expect_context": true
+  },
+  {
+    "question": "What is the capital of France?",
+    "expected_source_titles": [],
+    "expected_keywords": [],
+    "expect_context": false
+  }
+]

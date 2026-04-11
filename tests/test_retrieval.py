@@ -112,6 +112,16 @@ def test_retrieve_chunks_rejects_empty_vector_store(tmp_path: Path) -> None:
         )
 
 
+def test_retrieve_chunks_returns_no_usable_chunks_for_off_domain_query(indexed_vector_store) -> None:
+    result = retrieve_chunks(
+        vector_store=indexed_vector_store,
+        request=RetrievalRequest(query="What is the capital of France?", top_k=2),
+    )
+
+    assert result.chunks == []
+    assert result.sources == []
+
+
 @pytest.fixture
 def indexed_vector_store(tmp_path: Path):
     raw_dir = tmp_path / "raw"
