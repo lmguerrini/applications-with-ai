@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from build_index import KBRebuildResult
 from app import (
     AppValidationError,
     build_chat_model_cache_inputs,
@@ -18,6 +19,8 @@ from app import (
     build_session_usage_totals,
     build_turn_record,
     build_vector_store_cache_inputs,
+    build_kb_rebuild_error_message,
+    build_kb_rebuild_success_message,
     clean_markdown_text_for_pdf,
     format_kb_status_label,
     format_request_usage_label,
@@ -31,6 +34,8 @@ from app import (
     get_user_facing_error_message,
     normalize_text_for_pdf,
     parse_source_string,
+    run_kb_rebuild_action,
+    should_show_kb_rebuild_trigger,
     validate_query,
 )
 from src.kb_status import KBStatusResult
@@ -220,6 +225,110 @@ def test_format_kb_status_label_uses_readable_state_text() -> None:
     )
 
     assert format_kb_status_label(status) == "Status: Up to date"
+
+
+def test_should_show_kb_rebuild_trigger_only_for_missing_or_outdated() -> None:
+    assert should_show_kb_rebuild_trigger(
+        KBStatusResult(
+            state="missing",
+            summary="Knowledge base is missing.",
+            detail="No usable local index was found.",
+            rebuild_command="python build_index.py",
+        )
+    )
+    assert should_show_kb_rebuild_trigger(
+        KBStatusResult(
+            state="outdated",
+            summary="Knowledge base is outdated.",
+            detail="The raw markdown snapshot changed.",
+            rebuild_command="python build_index.py",
+        )
+    )
+    assert not should_show_kb_rebuild_trigger(
+        KBStatusResult(
+            state="up_to_date",
+            summary="Knowledge base is up to date.",
+            detail="The local index matches the raw snapshot.",
+            rebuild_command=None,
+        )
+    )
+
+
+def test_build_kb_rebuild_success_message_is_short_and_readable() -> None:
+    message = build_kb_rebuild_success_message(
+        KBRebuildResult(
+            indexed_chunk_count=7,
+            collection_name="langchain_rag_knowledge_base",
+            persist_directory=Path("data/chroma_db"),
+            manifest_path=Path("data/chroma_db/kb_manifest.json"),
+        )
+    )
+
+    assert message == (
+        "Knowledge base rebuilt successfully. "
+        "Indexed 7 chunks into 'langchain_rag_knowledge_base'."
+    )
+
+
+def test_build_kb_rebuild_error_message_is_clean() -> None:
+    assert build_kb_rebuild_error_message(RuntimeError("temporary failure")) == (
+        "Knowledge base rebuild failed: temporary failure"
+    )
+
+
+def test_run_kb_rebuild_action_clears_vector_store_cache_on_success() -> None:
+    cleared: list[str] = []
+
+    def rebuild_stub(settings: FakeSettings) -> KBRebuildResult:
+        assert settings.openai_api_key == "key-123"
+        return KBRebuildResult(
+            indexed_chunk_count=4,
+            collection_name="langchain_rag_knowledge_base",
+            persist_directory=Path("data/chroma_db"),
+            manifest_path=Path("data/chroma_db/kb_manifest.json"),
+        )
+
+    outcome = run_kb_rebuild_action(
+        settings=FakeSettings(openai_api_key="key-123"),
+        rebuild_fn=rebuild_stub,
+        clear_vector_store_cache_fn=lambda: cleared.append("cleared"),
+    )
+
+    assert outcome == {
+        "ok": True,
+        "should_rerun": True,
+        "feedback": {
+            "kind": "success",
+            "message": (
+                "Knowledge base rebuilt successfully. "
+                "Indexed 4 chunks into 'langchain_rag_knowledge_base'."
+            ),
+        },
+    }
+    assert cleared == ["cleared"]
+
+
+def test_run_kb_rebuild_action_does_not_clear_vector_store_cache_on_failure() -> None:
+    cleared: list[str] = []
+
+    def rebuild_stub(settings: FakeSettings) -> KBRebuildResult:
+        raise RuntimeError("index build failed")
+
+    outcome = run_kb_rebuild_action(
+        settings=FakeSettings(openai_api_key="key-123"),
+        rebuild_fn=rebuild_stub,
+        clear_vector_store_cache_fn=lambda: cleared.append("cleared"),
+    )
+
+    assert outcome == {
+        "ok": False,
+        "should_rerun": False,
+        "feedback": {
+            "kind": "error",
+            "message": "Knowledge base rebuild failed: index build failed",
+        },
+    }
+    assert cleared == []
 
 
 def test_build_conversation_markdown_handles_empty_history() -> None:

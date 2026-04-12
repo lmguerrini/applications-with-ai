@@ -11,6 +11,7 @@ from fpdf import FPDF
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from build_index import KBRebuildResult, rebuild_knowledge_base
 from src.chains import run_backend_query
 from src.config import Settings, get_settings
 from src.kb_status import KBStatusResult, get_kb_status
@@ -22,6 +23,7 @@ from src.schemas import AnswerResult
 DEFAULT_CHAT_MODEL = "gpt-4.1-mini"
 PREVIEW_LENGTH = 80
 EXPORT_FORMAT_OPTIONS = ("Markdown", "JSON", "CSV", "PDF")
+KB_REBUILD_FEEDBACK_KEY = "kb_rebuild_feedback"
 PDF_TEXT_REPLACEMENTS = str.maketrans(
     {
         "\u00a0": " ",
@@ -377,6 +379,51 @@ def format_kb_status_label(status: KBStatusResult) -> str:
     return f"Status: {labels[status.state]}"
 
 
+def should_show_kb_rebuild_trigger(status: KBStatusResult) -> bool:
+    return status.state in {"missing", "outdated"}
+
+
+def build_kb_rebuild_success_message(result: KBRebuildResult) -> str:
+    return (
+        "Knowledge base rebuilt successfully. "
+        f"Indexed {result.indexed_chunk_count} chunks into '{result.collection_name}'."
+    )
+
+
+def build_kb_rebuild_error_message(exc: Exception) -> str:
+    return f"Knowledge base rebuild failed: {exc}"
+
+
+def run_kb_rebuild_action(
+    *,
+    settings: Settings,
+    rebuild_fn=rebuild_knowledge_base,
+    clear_vector_store_cache_fn=None,
+) -> dict[str, object]:
+    cache_clearer = clear_vector_store_cache_fn or _build_cached_vector_store.clear
+    try:
+        result = rebuild_fn(settings)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "should_rerun": False,
+            "feedback": {
+                "kind": "error",
+                "message": build_kb_rebuild_error_message(exc),
+            },
+        }
+
+    cache_clearer()
+    return {
+        "ok": True,
+        "should_rerun": True,
+        "feedback": {
+            "kind": "success",
+            "message": build_kb_rebuild_success_message(result),
+        },
+    }
+
+
 def build_conversation_markdown(conversation_history: list[dict[str, object]]) -> str:
     lines = ["# Conversation Export", ""]
     if not conversation_history:
@@ -672,14 +719,38 @@ def get_export_artifact(
 
 
 def render_help_section(
+    settings: Settings,
     conversation_history: list[dict[str, object]],
     kb_status: KBStatusResult,
 ) -> None:
     help_content = get_help_content()
     with st.sidebar:
+        feedback = st.session_state.pop(KB_REBUILD_FEEDBACK_KEY, None)
+        if isinstance(feedback, dict) and isinstance(feedback.get("message"), str):
+            if feedback.get("kind") == "success":
+                st.success(feedback["message"])
+            elif feedback.get("kind") == "error":
+                st.error(feedback["message"])
+
         st.subheader("Knowledge Base")
         st.write(format_kb_status_label(kb_status))
         st.caption(kb_status.detail)
+        if should_show_kb_rebuild_trigger(kb_status):
+            if st.button("Rebuild knowledge base", use_container_width=True):
+                with st.status("Rebuilding knowledge base...", expanded=True) as status:
+                    status.write("Building the local Chroma index and writing the KB manifest")
+                    rebuild_outcome = run_kb_rebuild_action(settings=settings)
+                    if rebuild_outcome["ok"]:
+                        status.write("Clearing the cached vector store")
+                        status.update(label="Knowledge base rebuilt", state="complete")
+                        st.session_state[KB_REBUILD_FEEDBACK_KEY] = rebuild_outcome[
+                            "feedback"
+                        ]
+                        st.rerun()
+
+                    status.update(label="Knowledge base rebuild failed", state="error")
+                    st.error(rebuild_outcome["feedback"]["message"])
+
         if kb_status.rebuild_command is not None:
             st.caption(f"Rebuild manually: `{kb_status.rebuild_command}`")
 
@@ -736,7 +807,7 @@ def main() -> None:
         st.session_state["request_timestamps"] = []
 
     kb_status = get_kb_status(settings)
-    render_help_section(st.session_state["conversation_history"], kb_status)
+    render_help_section(settings, st.session_state["conversation_history"], kb_status)
 
     render_latest_turn()
 
