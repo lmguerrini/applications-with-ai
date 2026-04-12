@@ -29,6 +29,7 @@ from app import (
     get_export_artifact,
     get_response_generation_explanation,
     get_help_content,
+    get_initial_chat_model_selection,
     get_response_summary_line,
     get_response_type_label,
     get_user_facing_error_message,
@@ -36,15 +37,30 @@ from app import (
     parse_source_string,
     run_kb_rebuild_action,
     should_show_kb_rebuild_trigger,
+    validate_selected_chat_model,
     validate_query,
 )
+from src.config import SUPPORTED_CHAT_MODELS
+from src.config import Settings
 from src.kb_status import KBStatusResult
 from src.schemas import AnswerResult, RequestUsage
 
 
 class FakeSettings(SimpleNamespace):
+    supported_chat_models = SUPPORTED_CHAT_MODELS
+    default_chat_model = "gpt-4.1-mini"
+
     def ensure_openai_api_key(self) -> str:
         return self.openai_api_key
+
+    def ensure_supported_chat_model(self, model_name: str) -> str:
+        cleaned_model_name = model_name.strip()
+        if cleaned_model_name not in self.supported_chat_models:
+            raise ValueError(
+                "Unsupported chat model selected. Choose one of: "
+                + ", ".join(self.supported_chat_models)
+            )
+        return cleaned_model_name
 
 
 def test_validate_query_trims_whitespace() -> None:
@@ -73,6 +89,24 @@ def test_get_user_facing_error_message_maps_known_errors() -> None:
     assert get_user_facing_error_message(RuntimeError("Connection error.")) == (
         "The AI backend could not be reached. Please try again in a moment."
     )
+    assert get_user_facing_error_message(
+        RuntimeError("The model `gpt-4.1` does not exist or you do not have access to it.")
+    ) == (
+        "The selected OpenAI model is unavailable for this API key. Choose a different model and try again."
+    )
+
+
+def test_settings_default_chat_model_is_supported() -> None:
+    settings = Settings(DEFAULT_CHAT_MODEL="gpt-4.1-mini")
+
+    assert settings.default_chat_model == "gpt-4.1-mini"
+    assert settings.default_chat_model in settings.supported_chat_models
+    assert settings.supported_chat_models == SUPPORTED_CHAT_MODELS
+
+
+def test_settings_reject_unsupported_default_chat_model() -> None:
+    with pytest.raises(ValueError, match="Unsupported chat model selected"):
+        Settings(DEFAULT_CHAT_MODEL="gpt-4.1-turbo")
 
 
 def test_build_turn_record_keeps_only_ui_fields() -> None:
@@ -329,6 +363,30 @@ def test_run_kb_rebuild_action_does_not_clear_vector_store_cache_on_failure() ->
         },
     }
     assert cleared == []
+
+
+def test_get_initial_chat_model_selection_uses_valid_state_or_default() -> None:
+    settings = FakeSettings(openai_api_key="key-123")
+
+    assert (
+        get_initial_chat_model_selection(settings, "gpt-4.1")
+        == "gpt-4.1"
+    )
+    assert (
+        get_initial_chat_model_selection(settings, "not-a-real-model")
+        == settings.default_chat_model
+    )
+    assert (
+        get_initial_chat_model_selection(settings, None)
+        == settings.default_chat_model
+    )
+
+
+def test_validate_selected_chat_model_rejects_unsupported_model() -> None:
+    settings = FakeSettings(openai_api_key="key-123")
+
+    with pytest.raises(AppValidationError, match="Unsupported chat model selected"):
+        validate_selected_chat_model("not-a-real-model", settings)
 
 
 def test_build_conversation_markdown_handles_empty_history() -> None:
@@ -894,11 +952,22 @@ def test_build_vector_store_cache_inputs_reflects_settings_values() -> None:
 def test_build_chat_model_cache_inputs_reflects_settings_values() -> None:
     settings = FakeSettings(openai_api_key="key-456")
 
-    assert build_chat_model_cache_inputs(settings) == {
+    assert build_chat_model_cache_inputs(settings, "gpt-4.1") == {
         "api_key": "key-456",
-        "model_name": "gpt-4.1-mini",
+        "model_name": "gpt-4.1",
         "temperature": 0,
     }
+
+
+def test_build_chat_model_cache_inputs_change_when_selected_model_changes() -> None:
+    settings = FakeSettings(openai_api_key="key-456")
+
+    first_inputs = build_chat_model_cache_inputs(settings, "gpt-4.1-mini")
+    second_inputs = build_chat_model_cache_inputs(settings, "gpt-4o-mini")
+
+    assert first_inputs != second_inputs
+    assert first_inputs["model_name"] == "gpt-4.1-mini"
+    assert second_inputs["model_name"] == "gpt-4o-mini"
 
 
 def test_parse_source_string_extracts_title_metadata_and_path() -> None:

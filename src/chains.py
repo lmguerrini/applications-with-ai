@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
+from src.config import SUPPORTED_CHAT_MODELS
 from src.retrieval import retrieve_chunks
 from src.schemas import AnswerResult, RequestUsage, RetrievalRequest, RetrievalResult
 from src.tools import format_tool_answer, maybe_invoke_tool
@@ -35,6 +36,18 @@ CHAT_MODEL_PRICING_PER_MILLION = {
     "gpt-4.1": {"input": 2.00, "output": 8.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
 }
+
+UNPRICED_SUPPORTED_CHAT_MODELS = tuple(
+    model_name
+    for model_name in SUPPORTED_CHAT_MODELS
+    if model_name not in CHAT_MODEL_PRICING_PER_MILLION
+)
+
+if UNPRICED_SUPPORTED_CHAT_MODELS:
+    raise RuntimeError(
+        "Missing chat-model pricing for supported models: "
+        + ", ".join(UNPRICED_SUPPORTED_CHAT_MODELS)
+    )
 
 
 class ChatModelLike(Protocol):

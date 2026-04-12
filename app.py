@@ -20,10 +20,10 @@ from src.rate_limit import apply_rate_limit
 from src.schemas import AnswerResult
 
 
-DEFAULT_CHAT_MODEL = "gpt-4.1-mini"
 PREVIEW_LENGTH = 80
 EXPORT_FORMAT_OPTIONS = ("Markdown", "JSON", "CSV", "PDF")
 KB_REBUILD_FEEDBACK_KEY = "kb_rebuild_feedback"
+CHAT_MODEL_SESSION_KEY = "selected_chat_model"
 PDF_TEXT_REPLACEMENTS = str.maketrans(
     {
         "\u00a0": " ",
@@ -93,16 +93,43 @@ def _build_cached_chat_model(
     )
 
 
-def build_chat_model_cache_inputs(settings: Settings) -> dict[str, str | float]:
+def get_initial_chat_model_selection(
+    settings: Settings,
+    selected_model: object,
+) -> str:
+    if isinstance(selected_model, str) and selected_model in settings.supported_chat_models:
+        return selected_model
+    return settings.default_chat_model
+
+
+def validate_selected_chat_model(
+    selected_model: object,
+    settings: Settings,
+) -> str:
+    if not isinstance(selected_model, str) or not selected_model.strip():
+        raise AppValidationError("Select a supported chat model before sending a request.")
+
+    try:
+        return settings.ensure_supported_chat_model(selected_model)
+    except ValueError as exc:
+        raise AppValidationError(str(exc)) from exc
+
+
+def build_chat_model_cache_inputs(
+    settings: Settings,
+    selected_model: str,
+) -> dict[str, str | float]:
     return {
         "api_key": settings.ensure_openai_api_key(),
-        "model_name": DEFAULT_CHAT_MODEL,
+        "model_name": settings.ensure_supported_chat_model(selected_model),
         "temperature": 0,
     }
 
 
-def get_chat_model(settings: Settings) -> ChatOpenAI:
-    return _build_cached_chat_model(**build_chat_model_cache_inputs(settings))
+def get_chat_model(settings: Settings, selected_model: str) -> ChatOpenAI:
+    return _build_cached_chat_model(
+        **build_chat_model_cache_inputs(settings, selected_model)
+    )
 
 
 def render_latest_turn() -> None:
@@ -160,12 +187,22 @@ def build_safe_log_metadata(query: str) -> dict[str, object]:
 
 def get_user_facing_error_message(exc: Exception) -> str:
     message = str(exc)
+    lowered_message = message.lower()
     if isinstance(exc, AppValidationError):
         return message
     if "OPENAI_API_KEY" in message:
         return "OpenAI is not configured yet. Add OPENAI_API_KEY and try again."
     if "Chroma vector store is unavailable" in message or "Chroma vector store is empty" in message:
         return "The local knowledge base is not ready. Build the Chroma index before asking questions."
+    if "unsupported chat model" in lowered_message:
+        return message
+    if (
+        "model_not_found" in lowered_message
+        or "does not have access to the model" in lowered_message
+        or "do not have access to the model" in lowered_message
+        or ("model" in lowered_message and "does not exist" in lowered_message)
+    ):
+        return "The selected OpenAI model is unavailable for this API key. Choose a different model and try again."
     if "Connection error" in message:
         return "The AI backend could not be reached. Please try again in a moment."
     return "Something went wrong while processing your request. Please try again."
@@ -755,6 +792,17 @@ def render_help_section(
             st.caption(f"Rebuild manually: `{kb_status.rebuild_command}`")
 
         st.subheader("Chat Controls")
+        current_chat_model = get_initial_chat_model_selection(
+            settings,
+            st.session_state.get(CHAT_MODEL_SESSION_KEY),
+        )
+        st.session_state[CHAT_MODEL_SESSION_KEY] = current_chat_model
+        st.selectbox(
+            "Chat model",
+            options=settings.supported_chat_models,
+            index=settings.supported_chat_models.index(current_chat_model),
+            key=CHAT_MODEL_SESSION_KEY,
+        )
         if st.button("Clear chat", use_container_width=True):
             st.session_state["conversation_history"] = []
             st.rerun()
@@ -805,6 +853,8 @@ def main() -> None:
         st.session_state["conversation_history"] = []
     if "request_timestamps" not in st.session_state:
         st.session_state["request_timestamps"] = []
+    if CHAT_MODEL_SESSION_KEY not in st.session_state:
+        st.session_state[CHAT_MODEL_SESSION_KEY] = settings.default_chat_model
 
     kb_status = get_kb_status(settings)
     render_help_section(settings, st.session_state["conversation_history"], kb_status)
@@ -842,8 +892,12 @@ def main() -> None:
                 return
 
             status.write("Loading resources")
+            selected_chat_model = validate_selected_chat_model(
+                st.session_state.get(CHAT_MODEL_SESSION_KEY),
+                settings,
+            )
             vector_store = get_vector_store(settings)
-            chat_model = get_chat_model(settings)
+            chat_model = get_chat_model(settings, selected_chat_model)
             status.write("Processing request")
             result = run_backend_query(
                 query=validated_query,

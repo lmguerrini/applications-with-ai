@@ -4,8 +4,19 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SUPPORTED_CHAT_MODELS = (
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-4o-mini",
+)
+
+
 class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    default_chat_model: str = Field(
+        default="gpt-4.1-mini",
+        alias="DEFAULT_CHAT_MODEL",
+    )
     embedding_model: str = Field(
         default="text-embedding-3-small",
         alias="EMBEDDING_MODEL",
@@ -40,6 +51,24 @@ class Settings(BaseSettings):
                 "OpenAI embeddings. Add it to your environment or .env file."
             )
         return self.openai_api_key
+
+    @property
+    def supported_chat_models(self) -> tuple[str, ...]:
+        return SUPPORTED_CHAT_MODELS
+
+    def ensure_supported_chat_model(self, model_name: str) -> str:
+        cleaned_model_name = model_name.strip()
+        if cleaned_model_name not in self.supported_chat_models:
+            raise ValueError(
+                "Unsupported chat model selected. Choose one of: "
+                + ", ".join(self.supported_chat_models)
+            )
+        return cleaned_model_name
+
+    def model_post_init(self, __context) -> None:
+        self.default_chat_model = self.ensure_supported_chat_model(
+            self.default_chat_model
+        )
 
 
 def get_settings() -> Settings:

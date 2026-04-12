@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from langchain_core.embeddings.fake import FakeEmbeddings
 
 from src import chains
-from src.config import Settings
+from src.config import SUPPORTED_CHAT_MODELS, Settings
 from src.knowledge_base import build_index
 from src.schemas import (
     AnswerResult,
@@ -385,6 +385,61 @@ def test_answer_query_extracts_usage_from_response_metadata_token_usage(monkeypa
     assert result.usage.output_tokens == 7
     assert result.usage.total_tokens == 18
     assert result.usage.estimated_cost_usd == 0.000016
+
+
+def test_supported_chat_models_all_have_pricing_support() -> None:
+    assert set(SUPPORTED_CHAT_MODELS) <= set(chains.CHAT_MODEL_PRICING_PER_MILLION)
+
+
+def test_answer_query_extracts_usage_for_non_default_supported_model(monkeypatch) -> None:
+    retrieval_result = RetrievalResult(
+        rewritten_query="streamlit source metadata",
+        applied_filters=RetrievalFilters(topic="streamlit", library="streamlit"),
+        used_fallback=False,
+        chunks=[
+            RetrievedChunk.model_validate(
+                {
+                    "content": "Show source titles next to the answer in Streamlit.",
+                    "metadata": {
+                        "doc_id": "streamlit-chat-patterns",
+                        "source_path": "data/raw/streamlit_chat_patterns.md",
+                        "title": "Streamlit Chat Patterns",
+                        "topic": "streamlit",
+                        "library": "streamlit",
+                        "doc_type": "example",
+                        "difficulty": "intermediate",
+                        "error_family": "ui",
+                        "chunk_index": 0,
+                    },
+                }
+            )
+        ],
+        sources=["Streamlit Chat Patterns"],
+    )
+
+    def fake_retrieve_chunks(*, vector_store, request):
+        return retrieval_result
+
+    monkeypatch.setattr(chains, "retrieve_chunks", fake_retrieve_chunks)
+    model = StubChatModel("Use sources in the UI.", model_name="gpt-4o-mini")
+    model.usage_metadata = {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "total_tokens": 17,
+    }
+
+    result = chains.answer_query(
+        query="How should I show sources in Streamlit?",
+        vector_store=object(),
+        chat_model=model,
+    )
+
+    assert result.usage is not None
+    assert result.usage.model_name == "gpt-4o-mini"
+    assert result.usage.input_tokens == 12
+    assert result.usage.output_tokens == 5
+    assert result.usage.total_tokens == 17
+    assert result.usage.estimated_cost_usd == 0.000005
 
 
 def test_answer_query_returns_none_usage_when_metadata_is_missing(monkeypatch) -> None:
