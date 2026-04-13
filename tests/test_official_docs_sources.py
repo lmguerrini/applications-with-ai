@@ -50,25 +50,75 @@ def test_lookup_langchain_official_docs_raises_when_remote_mcp_is_unavailable() 
     assert called is False
 
 
-def test_lookup_openai_official_docs_raises_when_remote_mcp_is_unavailable() -> None:
+def test_lookup_openai_official_docs_returns_normalized_documents() -> None:
     request = OfficialDocsLookupRequest(
         query="How do streaming responses work?",
         library="openai",
     )
-    called = False
+    calls: list[tuple[str, dict[str, object] | None]] = []
 
-    def mcp_call_fn(*, server_url, tool_name, arguments, timeout_seconds):
-        nonlocal called
-        called = True
-        return {}
+    payload = {
+        "hits": [
+            {
+                "url": "https://developers.openai.com/docs/guides/streaming-responses#chunk",
+                "url_without_anchor": "https://developers.openai.com/docs/guides/streaming-responses",
+                "content": "Use streaming to receive partial response events as they are generated.",
+                "hierarchy": {
+                    "lvl0": "Documentation",
+                    "lvl1": "Streaming responses",
+                },
+            }
+        ]
+    }
 
-    with pytest.raises(NotImplementedError, match=REMOTE_MCP_UNAVAILABLE_MESSAGE):
-        lookup_openai_official_docs(
-            request=request,
-            mcp_call_fn=mcp_call_fn,
-        )
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        assert server_url == "https://developers.openai.com/mcp"
+        assert timeout_seconds == 15.0
+        calls.append((method, params))
+        if method == "tools/list":
+            return {
+                "tools": [
+                    {
+                        "name": "search_openai_docs",
+                        "description": "Search the OpenAI developer docs.",
+                    }
+                ]
+            }
+        if method == "tools/call":
+            assert params == {
+                "name": "search_openai_docs",
+                "arguments": {"query": "How do streaming responses work?"},
+            }
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(payload),
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected method: {method}")
 
-    assert called is False
+    result = lookup_openai_official_docs(
+        request=request,
+        mcp_call_fn=mcp_call_fn,
+    )
+
+    assert calls == [
+        ("tools/list", {}),
+        (
+            "tools/call",
+            {
+                "name": "search_openai_docs",
+                "arguments": {"query": "How do streaming responses work?"},
+            },
+        ),
+    ]
+    assert result.library == "openai"
+    assert result.documents[0].provider_mode == "official_mcp"
+    assert result.documents[0].title == "Streaming responses"
+    assert result.documents[0].url == "https://developers.openai.com/docs/guides/streaming-responses"
+    assert "partial response events" in result.documents[0].snippets[0].text
 
 
 def test_lookup_streamlit_official_docs_uses_deterministic_fallback_manifest(tmp_path) -> None:
@@ -180,22 +230,75 @@ def test_lookup_official_docs_documents_rejects_empty_adapter_output() -> None:
         )
 
 
-def test_lookup_openai_official_docs_still_raises_remote_unavailable_with_custom_transport() -> None:
+def test_lookup_openai_official_docs_rejects_malformed_payload() -> None:
     request = OfficialDocsLookupRequest(
         query="How do streaming responses work?",
         library="openai",
     )
-    called = False
 
-    def mcp_call_fn(*, server_url, tool_name, arguments, timeout_seconds):
-        nonlocal called
-        called = True
-        return {"content": [{"type": "text", "text": "{\"unexpected\": true}"}]}
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        if method == "tools/list":
+            return {"tools": [{"name": "search_openai_docs"}]}
+        return {"structuredContent": {"hits": "bad"}}
 
-    with pytest.raises(NotImplementedError, match=REMOTE_MCP_UNAVAILABLE_MESSAGE):
+    with pytest.raises(ValueError, match="malformed search results"):
         lookup_openai_official_docs(
             request=request,
             mcp_call_fn=mcp_call_fn,
         )
 
-    assert called is False
+
+def test_lookup_openai_official_docs_rejects_empty_results() -> None:
+    request = OfficialDocsLookupRequest(
+        query="How do streaming responses work?",
+        library="openai",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        if method == "tools/list":
+            return {"tools": [{"name": "search_openai_docs"}]}
+        return {"structuredContent": {"hits": []}}
+
+    with pytest.raises(ValueError, match="returned no usable documents"):
+        lookup_openai_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
+
+
+def test_lookup_openai_official_docs_raises_transport_failure() -> None:
+    request = OfficialDocsLookupRequest(
+        query="How do streaming responses work?",
+        library="openai",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        raise RuntimeError("Official docs MCP request failed: timed out")
+
+    with pytest.raises(RuntimeError, match="Official docs MCP request failed: timed out"):
+        lookup_openai_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
+
+
+def test_lookup_openai_official_docs_rejects_missing_search_tool() -> None:
+    request = OfficialDocsLookupRequest(
+        query="How do streaming responses work?",
+        library="openai",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        assert method == "tools/list"
+        return {
+            "tools": [
+                {"name": "fetch_openai_doc"},
+                {"name": "list_openai_docs"},
+            ]
+        }
+
+    with pytest.raises(ValueError, match="did not expose a suitable search tool"):
+        lookup_openai_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
