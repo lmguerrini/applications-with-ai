@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 Topic = Literal["langchain", "rag", "chroma", "streamlit", "tool_calling", "prompting"]
@@ -15,6 +15,7 @@ ToolName = Literal[
 ]
 SupportedToolLibrary = Literal["langchain", "chroma", "streamlit", "openai"]
 RetrievalTaskType = Literal["question_answering", "debugging", "implementation"]
+OfficialDocsProviderMode = Literal["official_mcp", "official_fallback"]
 
 
 class DocumentMetadata(BaseModel):
@@ -193,6 +194,89 @@ class RequestUsage(BaseModel):
         if value < 0:
             raise ValueError("Token counts must be zero or greater.")
         return value
+
+
+class OfficialDocsLookupRequest(BaseModel):
+    query: str
+    library: SupportedToolLibrary
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Official docs query must not be empty.")
+        return cleaned
+
+
+class OfficialDocsSnippet(BaseModel):
+    text: str
+    rank: int | None = None
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Official docs snippets must include non-empty text.")
+        return cleaned
+
+    @field_validator("rank")
+    @classmethod
+    def validate_rank(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("Official docs snippet rank must be at least 1.")
+        return value
+
+
+class OfficialDocsDocument(BaseModel):
+    title: str
+    url: str
+    provider_mode: OfficialDocsProviderMode
+    snippets: list[OfficialDocsSnippet]
+
+    @field_validator("title", "url")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Official docs documents must include non-empty text fields.")
+        return cleaned
+
+    @field_validator("snippets")
+    @classmethod
+    def validate_snippets(cls, value: list[OfficialDocsSnippet]) -> list[OfficialDocsSnippet]:
+        if not value:
+            raise ValueError("Official docs documents must include at least one snippet.")
+        return value
+
+
+class OfficialDocsLookupResult(BaseModel):
+    library: SupportedToolLibrary
+    documents: list[OfficialDocsDocument]
+
+
+class OfficialDocsAnswerResult(BaseModel):
+    library: SupportedToolLibrary
+    answer: str
+    lookup_result: OfficialDocsLookupResult
+    usage: RequestUsage | None = None
+
+    @field_validator("answer")
+    @classmethod
+    def validate_answer(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Official docs answer must not be empty.")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_library_alignment(self):
+        if self.lookup_result.library != self.library:
+            raise ValueError(
+                "Official docs answer result library must match the lookup result library."
+            )
+        return self
 
 
 class AnswerResult(BaseModel):
