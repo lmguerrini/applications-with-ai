@@ -19,6 +19,7 @@ from src.schemas import (
 
 LANGCHAIN_OFFICIAL_MCP_TOOL_NAME = "search_docs_by_lang_chain"
 OPENAI_OFFICIAL_MCP_TOOL_NAME = "search_openai_docs"
+LANGCHAIN_ALLOWED_TOOL_NAMES = (LANGCHAIN_OFFICIAL_MCP_TOOL_NAME,)
 OPENAI_ALLOWED_TOOL_NAMES = (OPENAI_OFFICIAL_MCP_TOOL_NAME,)
 REMOTE_MCP_UNAVAILABLE_MESSAGE = "Remote MCP not available"
 OPENAI_MAX_DOCUMENTS = 3
@@ -153,8 +154,205 @@ def lookup_langchain_official_docs(
     settings: Settings | None = None,
     mcp_call_fn: MCPRequestFn = send_mcp_jsonrpc_request,
 ) -> OfficialDocsLookupResult:
-    _ = (request, settings, mcp_call_fn)
-    raise NotImplementedError(REMOTE_MCP_UNAVAILABLE_MESSAGE)
+    resolved_settings = settings or get_settings()
+
+    tools_result = mcp_call_fn(
+        server_url=resolved_settings.official_langchain_docs_mcp_url,
+        method="tools/list",
+        params={},
+        timeout_seconds=resolved_settings.official_docs_timeout_seconds,
+    )
+    tool_name = _select_langchain_search_tool_name(tools_result)
+
+    tool_call_result = mcp_call_fn(
+        server_url=resolved_settings.official_langchain_docs_mcp_url,
+        method="tools/call",
+        params={
+            "name": tool_name,
+            "arguments": {"query": request.query},
+        },
+        timeout_seconds=resolved_settings.official_docs_timeout_seconds,
+    )
+
+    documents = _build_langchain_documents(tool_call_result)
+    if not documents:
+        raise ValueError("LangChain official docs MCP returned no usable documents.")
+
+    return OfficialDocsLookupResult(
+        library="langchain",
+        documents=documents,
+    )
+
+
+def _select_langchain_search_tool_name(tools_result: Mapping[str, object]) -> str:
+    raw_tools = tools_result.get("tools")
+    if not isinstance(raw_tools, list):
+        raise RuntimeError("Official docs MCP response did not include a valid tools list.")
+
+    tool_names = [
+        tool.get("name")
+        for tool in raw_tools
+        if isinstance(tool, Mapping) and isinstance(tool.get("name"), str)
+    ]
+    allowed_matches = [
+        tool_name
+        for tool_name in tool_names
+        if tool_name in LANGCHAIN_ALLOWED_TOOL_NAMES
+    ]
+    if len(allowed_matches) == 1:
+        return allowed_matches[0]
+    if len(allowed_matches) > 1:
+        raise ValueError("LangChain official docs MCP exposed multiple matching search tools.")
+    if len(tool_names) == 1:
+        return tool_names[0]
+
+    inferred_matches = [
+        tool_name
+        for tool_name in tool_names
+        if "search" in tool_name.lower()
+        and ("doc" in tool_name.lower() or "langchain" in tool_name.lower())
+    ]
+    if len(inferred_matches) == 1:
+        return inferred_matches[0]
+
+    raise ValueError("LangChain official docs MCP did not expose a suitable search tool.")
+
+
+def _build_langchain_documents(result_payload: Mapping[str, object]) -> list[OfficialDocsDocument]:
+    structured_content = result_payload.get("structuredContent")
+    if isinstance(structured_content, Mapping):
+        documents = _build_langchain_documents_from_structured_content(structured_content)
+        if documents is not None:
+            return documents
+
+    content = result_payload.get("content")
+    if isinstance(content, list):
+        return _build_langchain_documents_from_content_blocks(content)
+
+    raise ValueError("LangChain official docs MCP returned an unsupported response shape.")
+
+
+def _build_langchain_documents_from_structured_content(
+    structured_content: Mapping[str, object],
+) -> list[OfficialDocsDocument] | None:
+    for key in ("documents", "docs"):
+        raw_entries = structured_content.get(key)
+        if raw_entries is None:
+            continue
+        if not isinstance(raw_entries, list):
+            raise ValueError("LangChain official docs MCP returned malformed documents.")
+        if not raw_entries:
+            return []
+
+        documents = _build_langchain_documents_from_entries(raw_entries)
+        if documents:
+            return documents
+
+        raise ValueError("LangChain official docs MCP returned malformed documents.")
+
+    return None
+
+
+def _build_langchain_documents_from_entries(
+    raw_entries: list[object],
+) -> list[OfficialDocsDocument]:
+    documents: list[OfficialDocsDocument] = []
+
+    for entry in raw_entries:
+        if not isinstance(entry, Mapping):
+            continue
+
+        title = _first_text(entry, ("title", "name"))
+        url = _first_text(entry, ("url", "link"))
+        snippet_texts = _extract_langchain_snippet_texts(entry)
+        if title is None or url is None or not snippet_texts:
+            continue
+
+        documents.append(
+            OfficialDocsDocument(
+                title=title,
+                url=url,
+                provider_mode="official_mcp",
+                snippets=[
+                    OfficialDocsSnippet(text=snippet_text, rank=index)
+                    for index, snippet_text in enumerate(snippet_texts, start=1)
+                ],
+            )
+        )
+
+    return documents
+
+
+def _extract_langchain_snippet_texts(entry: Mapping[str, object]) -> list[str]:
+    snippet_list = _extract_snippet_list(entry.get("snippets"))
+    if snippet_list:
+        return snippet_list
+
+    direct_content = _first_text(
+        entry,
+        ("page_content", "content", "summary", "excerpt", "text", "description"),
+    )
+    if direct_content is None:
+        return []
+    return [direct_content]
+
+
+def _build_langchain_documents_from_content_blocks(
+    content_blocks: list[object],
+) -> list[OfficialDocsDocument]:
+    if not content_blocks:
+        return []
+
+    grouped_entries: dict[tuple[str, str], list[str]] = {}
+    ordered_keys: list[tuple[str, str]] = []
+
+    for block in content_blocks:
+        if not isinstance(block, Mapping):
+            continue
+        block_text = block.get("text")
+        if not isinstance(block_text, str):
+            continue
+
+        title = _extract_langchain_flattened_field_value(block_text, "Title")
+        url = _extract_langchain_flattened_field_value(block_text, "Link")
+        snippet = _extract_langchain_flattened_field_value(block_text, "Content")
+        if title is None or url is None or snippet is None:
+            continue
+
+        key = (title, url)
+        if key not in grouped_entries:
+            grouped_entries[key] = []
+            ordered_keys.append(key)
+        if snippet not in grouped_entries[key]:
+            grouped_entries[key].append(snippet)
+
+    if not ordered_keys:
+        raise ValueError("LangChain official docs MCP returned malformed content blocks.")
+
+    return [
+        OfficialDocsDocument(
+            title=title,
+            url=url,
+            provider_mode="official_mcp",
+            snippets=[
+                OfficialDocsSnippet(text=snippet_text, rank=index)
+                for index, snippet_text in enumerate(grouped_entries[(title, url)], start=1)
+            ],
+        )
+        for title, url in ordered_keys
+    ]
+
+
+def _extract_langchain_flattened_field_value(text: str, field_name: str) -> str | None:
+    prefix = f"{field_name}:"
+    for raw_line in text.splitlines():
+        stripped_line = raw_line.strip()
+        if not stripped_line.startswith(prefix):
+            continue
+        cleaned_value = _clean_openai_text(stripped_line.removeprefix(prefix))
+        if cleaned_value is not None:
+            return cleaned_value
+    return None
 
 
 def lookup_openai_official_docs(

@@ -7,7 +7,6 @@ from src.official_docs_fallback_adapters import (
     lookup_streamlit_official_docs,
 )
 from src.official_docs_mcp_adapters import (
-    REMOTE_MCP_UNAVAILABLE_MESSAGE,
     lookup_langchain_official_docs,
     lookup_openai_official_docs,
     send_mcp_jsonrpc_request,
@@ -30,25 +29,215 @@ def test_select_official_docs_source_adapter_returns_requested_adapter() -> None
     assert selected_adapter is adapter
 
 
-def test_lookup_langchain_official_docs_raises_when_remote_mcp_is_unavailable() -> None:
+def test_lookup_langchain_official_docs_returns_normalized_documents_from_structured_content(
+) -> None:
     request = OfficialDocsLookupRequest(
         query="How should I start a RAG app?",
         library="langchain",
     )
-    called = False
+    calls: list[tuple[str, dict[str, object] | None]] = []
 
-    def mcp_call_fn(*, server_url, tool_name, arguments, timeout_seconds):
-        nonlocal called
-        called = True
-        return {}
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        assert server_url == "https://docs.langchain.com/mcp"
+        assert timeout_seconds == 15.0
+        calls.append((method, params))
+        if method == "tools/list":
+            return {
+                "tools": [
+                    {
+                        "name": "search_docs_by_lang_chain",
+                        "description": "Search the LangChain docs.",
+                    }
+                ]
+            }
+        if method == "tools/call":
+            assert params == {
+                "name": "search_docs_by_lang_chain",
+                "arguments": {"query": "How should I start a RAG app?"},
+            }
+            return {
+                "structuredContent": {
+                    "docs": [
+                        {
+                            "title": "Build a RAG agent with LangChain",
+                            "link": "https://docs.langchain.com/guides/rag",
+                            "page_content": "Start with a simple retrieval pipeline.",
+                        }
+                    ]
+                }
+            }
+        raise AssertionError(f"Unexpected method: {method}")
 
-    with pytest.raises(NotImplementedError, match=REMOTE_MCP_UNAVAILABLE_MESSAGE):
+    result = lookup_langchain_official_docs(
+        request=request,
+        mcp_call_fn=mcp_call_fn,
+    )
+
+    assert calls == [
+        ("tools/list", {}),
+        (
+            "tools/call",
+            {
+                "name": "search_docs_by_lang_chain",
+                "arguments": {"query": "How should I start a RAG app?"},
+            },
+        ),
+    ]
+    assert result.library == "langchain"
+    assert result.documents[0].provider_mode == "official_mcp"
+    assert result.documents[0].title == "Build a RAG agent with LangChain"
+    assert result.documents[0].url == "https://docs.langchain.com/guides/rag"
+    assert result.documents[0].snippets[0].text == "Start with a simple retrieval pipeline."
+
+
+def test_lookup_langchain_official_docs_returns_normalized_documents_from_content_blocks(
+) -> None:
+    request = OfficialDocsLookupRequest(
+        query="How should I start a RAG app?",
+        library="langchain",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        if method == "tools/list":
+            return {"tools": [{"name": "search_docs_by_lang_chain"}]}
+        if method == "tools/call":
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Title: Build a RAG agent with LangChain\n"
+                            "Link: https://docs.langchain.com/guides/rag\n"
+                            "Content: Start with a simple retrieval pipeline."
+                        ),
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Title: Build a RAG agent with LangChain\n"
+                            "Link: https://docs.langchain.com/guides/rag\n"
+                            "Content: Then layer in prompt grounding and evaluation."
+                        ),
+                    },
+                ]
+            }
+        raise AssertionError(f"Unexpected method: {method}")
+
+    result = lookup_langchain_official_docs(
+        request=request,
+        mcp_call_fn=mcp_call_fn,
+    )
+
+    assert result.library == "langchain"
+    assert len(result.documents) == 1
+    assert result.documents[0].title == "Build a RAG agent with LangChain"
+    assert result.documents[0].url == "https://docs.langchain.com/guides/rag"
+    assert [snippet.text for snippet in result.documents[0].snippets] == [
+        "Start with a simple retrieval pipeline.",
+        "Then layer in prompt grounding and evaluation.",
+    ]
+
+
+def test_lookup_langchain_official_docs_rejects_malformed_payload() -> None:
+    request = OfficialDocsLookupRequest(
+        query="How should I start a RAG app?",
+        library="langchain",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        if method == "tools/list":
+            return {"tools": [{"name": "search_docs_by_lang_chain"}]}
+        if method == "tools/call":
+            return {"structuredContent": {"docs": "bad"}}
+        raise AssertionError(f"Unexpected method: {method}")
+
+    with pytest.raises(ValueError, match="malformed documents"):
         lookup_langchain_official_docs(
             request=request,
             mcp_call_fn=mcp_call_fn,
         )
 
-    assert called is False
+
+def test_lookup_langchain_official_docs_rejects_empty_results() -> None:
+    request = OfficialDocsLookupRequest(
+        query="How should I start a RAG app?",
+        library="langchain",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        if method == "tools/list":
+            return {"tools": [{"name": "search_docs_by_lang_chain"}]}
+        if method == "tools/call":
+            return {"structuredContent": {"docs": []}}
+        raise AssertionError(f"Unexpected method: {method}")
+
+    with pytest.raises(ValueError, match="returned no usable documents"):
+        lookup_langchain_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
+
+
+def test_lookup_langchain_official_docs_raises_transport_failure() -> None:
+    request = OfficialDocsLookupRequest(
+        query="How should I start a RAG app?",
+        library="langchain",
+    )
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        raise RuntimeError("Official docs MCP request failed: timed out")
+
+    with pytest.raises(RuntimeError, match="Official docs MCP request failed: timed out"):
+        lookup_langchain_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
+
+
+def test_lookup_langchain_official_docs_prefers_search_tool_when_multiple_tools_are_present(
+) -> None:
+    request = OfficialDocsLookupRequest(
+        query="How should I start a RAG app?",
+        library="langchain",
+    )
+    tool_call_params: dict[str, object] | None = None
+
+    def mcp_call_fn(*, server_url, method, params, timeout_seconds):
+        nonlocal tool_call_params
+        if method == "tools/list":
+            return {
+                "tools": [
+                    {"name": "list_docs"},
+                    {"name": "search_docs_by_lang_chain"},
+                    {"name": "fetch_doc"},
+                ]
+            }
+        if method == "tools/call":
+            tool_call_params = params
+            return {
+                "structuredContent": {
+                    "documents": [
+                        {
+                            "title": "Build a RAG agent with LangChain",
+                            "url": "https://docs.langchain.com/guides/rag",
+                            "content": "Start with a simple retrieval pipeline.",
+                        }
+                    ]
+                }
+            }
+        raise AssertionError(f"Unexpected method: {method}")
+
+    result = lookup_langchain_official_docs(
+        request=request,
+        mcp_call_fn=mcp_call_fn,
+    )
+
+    assert tool_call_params == {
+        "name": "search_docs_by_lang_chain",
+        "arguments": {"query": "How should I start a RAG app?"},
+    }
+    assert result.library == "langchain"
+    assert result.documents[0].title == "Build a RAG agent with LangChain"
 
 
 def test_lookup_openai_official_docs_returns_normalized_documents() -> None:
