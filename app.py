@@ -150,6 +150,9 @@ def render_latest_turn() -> None:
             if turn["tool_result"]:
                 with st.expander("Tool Result"):
                     st.json(turn["tool_result"])
+            if turn.get("official_docs_result"):
+                with st.expander("Official Docs Result"):
+                    st.json(turn["official_docs_result"])
             if turn["sources"]:
                 with st.expander("Sources"):
                     for source in turn["sources"]:
@@ -219,31 +222,45 @@ def build_turn_record(query: str, result: AnswerResult) -> dict[str, object]:
             if result.tool_result is not None
             else None
         ),
+        "official_docs_result": (
+            result.official_docs_result.model_dump()
+            if result.official_docs_result is not None
+            else None
+        ),
         "usage": result.usage.model_dump() if result.usage is not None else None,
     }
 
 
 def get_response_type_label(turn: dict[str, object]) -> str:
-    if turn["tool_result"]:
+    if turn.get("tool_result"):
         return "Tool result"
+    if turn.get("official_docs_result"):
+        return "Official docs answer"
     if turn["used_context"]:
         return "Grounded answer"
     return "No-context fallback"
 
 
 def get_response_summary_line(turn: dict[str, object]) -> str:
-    if turn["tool_result"]:
+    if turn.get("tool_result"):
         return "Answered with a built-in tool."
+    if turn.get("official_docs_result"):
+        return "Answered from official documentation evidence."
     if turn["used_context"]:
         return "Used knowledge-base sources."
     return "No usable knowledge-base context found."
 
 
 def get_response_generation_explanation(turn: dict[str, object]) -> str:
-    if turn["tool_result"]:
+    if turn.get("tool_result"):
         return (
             "A built-in tool handled this request directly, so the app did not "
             "generate a knowledge-base-grounded answer."
+        )
+    if turn.get("official_docs_result"):
+        return (
+            "The app looked up official documentation for the named library and "
+            "generated this answer only from the retrieved official-docs evidence."
         )
     if turn["used_context"]:
         return (
@@ -257,12 +274,14 @@ def get_response_generation_explanation(turn: dict[str, object]) -> str:
 
 
 def format_request_usage_label(turn: dict[str, object]) -> str:
-    if turn["tool_result"] is not None or turn["used_context"] is False:
+    if turn.get("tool_result") is not None:
         return "No LLM usage"
 
     usage = turn.get("usage")
     if not isinstance(usage, dict):
-        return "Usage unavailable"
+        if turn.get("official_docs_result") is not None or turn["used_context"] is True:
+            return "Usage unavailable"
+        return "No LLM usage"
 
     model_name = usage.get("model_name") or "unknown model"
     cost = usage.get("estimated_cost_usd")
@@ -403,6 +422,7 @@ def get_help_content() -> dict[str, list[str] | str]:
         "examples_intro": "You can ask natural questions or use structured inputs for tools.",
         "response_types": [
             "Grounded answer: generated from retrieved knowledge-base context.",
+            "Official docs answer: generated from official documentation evidence only.",
             "Tool result: returned by one structured rule-based tool.",
             "No-context fallback: shown when the system cannot find usable domain context.",
         ],
@@ -923,7 +943,9 @@ def main() -> None:
             return
 
     path = "tool" if result.tool_result is not None else "rag"
-    if result.used_context is False and result.tool_result is None:
+    if result.official_docs_result is not None:
+        path = "official_docs"
+    elif result.used_context is False and result.tool_result is None:
         path = "fallback"
     LOGGER.info(
         "request_completed %s",

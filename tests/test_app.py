@@ -133,6 +133,7 @@ def test_build_turn_record_keeps_only_ui_fields() -> None:
         "used_context": True,
         "sources": ["Source A"],
         "tool_result": None,
+        "official_docs_result": None,
         "usage": {
             "model_name": "gpt-4.1-mini",
             "input_tokens": 20,
@@ -153,6 +154,18 @@ def test_get_response_type_label_maps_turn_variants() -> None:
             "tool_result": None,
         }
     ) == "Grounded answer"
+    assert get_response_type_label(
+        {
+            "query": "q",
+            "answer": "a",
+            "used_context": False,
+            "sources": [],
+            "tool_result": None,
+            "official_docs_result": {
+                "library": "langchain",
+            },
+        }
+    ) == "Official docs answer"
     assert get_response_type_label(
         {
             "query": "q",
@@ -189,6 +202,18 @@ def test_get_response_summary_line_maps_turn_variants() -> None:
             "answer": "a",
             "used_context": False,
             "sources": [],
+            "tool_result": None,
+            "official_docs_result": {
+                "library": "langchain",
+            },
+        }
+    ) == "Answered from official documentation evidence."
+    assert get_response_summary_line(
+        {
+            "query": "q",
+            "answer": "a",
+            "used_context": False,
+            "sources": [],
             "tool_result": {"tool_name": "estimate_openai_cost"},
         }
     ) == "Answered with a built-in tool."
@@ -215,6 +240,21 @@ def test_get_response_generation_explanation_maps_turn_variants() -> None:
     ) == (
         "The app used knowledge-base context to generate this answer. "
         "The sources below show what grounded the response."
+    )
+    assert get_response_generation_explanation(
+        {
+            "query": "q",
+            "answer": "a",
+            "used_context": False,
+            "sources": [],
+            "tool_result": None,
+            "official_docs_result": {
+                "library": "langchain",
+            },
+        }
+    ) == (
+        "The app looked up official documentation for the named library and "
+        "generated this answer only from the retrieved official-docs evidence."
     )
     assert get_response_generation_explanation(
         {
@@ -256,6 +296,7 @@ def test_get_help_content_includes_practical_sections() -> None:
         "Alternative format: model=gpt-4.1-mini, input_tokens=1000, output_tokens=500, num_calls=3",
     ]
     assert any("Grounded answer" in item for item in content["response_types"])
+    assert any("Official docs answer" in item for item in content["response_types"])
 
 
 def test_format_kb_status_label_uses_readable_state_text() -> None:
@@ -1041,7 +1082,7 @@ def test_format_source_display_falls_back_safely_for_malformed_source_string() -
     }
 
 
-def test_format_request_usage_label_handles_grounded_tool_and_fallback_turns() -> None:
+def test_format_request_usage_label_handles_grounded_official_docs_tool_and_fallback_turns() -> None:
     grounded_turn = {
         "query": "How should I persist Chroma locally?",
         "answer": "Persist the collection in a stable directory.",
@@ -1054,6 +1095,23 @@ def test_format_request_usage_label_handles_grounded_tool_and_fallback_turns() -
             "output_tokens": 10,
             "total_tokens": 30,
             "estimated_cost_usd": 0.000024,
+        },
+    }
+    official_docs_turn = {
+        "query": "According to LangChain docs, how should I start a small RAG app?",
+        "answer": "According to the official LangChain docs, start with a simple retrieval pipeline.",
+        "used_context": False,
+        "sources": [],
+        "tool_result": None,
+        "official_docs_result": {
+            "library": "langchain",
+        },
+        "usage": {
+            "model_name": "gpt-4.1-mini",
+            "input_tokens": 18,
+            "output_tokens": 7,
+            "total_tokens": 25,
+            "estimated_cost_usd": 0.000018,
         },
     }
     tool_turn = {
@@ -1083,6 +1141,9 @@ def test_format_request_usage_label_handles_grounded_tool_and_fallback_turns() -
 
     assert format_request_usage_label(grounded_turn) == (
         "LLM usage: gpt-4.1-mini | 20 in / 10 out / 30 total | $0.000024"
+    )
+    assert format_request_usage_label(official_docs_turn) == (
+        "LLM usage: gpt-4.1-mini | 18 in / 7 out / 25 total | $0.000018"
     )
     assert format_request_usage_label(tool_turn) == "No LLM usage"
     assert format_request_usage_label(unavailable_turn) == "Usage unavailable"

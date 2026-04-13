@@ -11,7 +11,15 @@ from src.official_docs_summary import (
     OfficialDocsSummaryImplementation,
     summarize_official_docs_answer,
 )
-from src.schemas import OfficialDocsAnswerResult, OfficialDocsLookupRequest, OfficialDocsLookupResult
+from src.schemas import (
+    OfficialDocsAnswerResult,
+    OfficialDocsLookupRequest,
+    OfficialDocsLookupResult,
+)
+
+OFFICIAL_DOCS_LOOKUP_UNAVAILABLE_ANSWER = (
+    "Official documentation lookup is not available for this library yet."
+)
 
 
 class OfficialDocsLookupImplementation(Protocol):
@@ -32,13 +40,38 @@ def answer_official_docs_query(
     lookup_impl: OfficialDocsLookupImplementation = lookup_official_docs_documents,
     summary_impl: OfficialDocsSummaryImplementation | None = None,
 ) -> OfficialDocsAnswerResult:
-    lookup_result = lookup_impl(
-        request=request,
-        adapters=adapters,
-    )
-    return summarize_official_docs_answer(
-        request=request,
-        lookup_result=lookup_result,
-        chat_model=chat_model,
-        summary_impl=summary_impl,
-    )
+    try:
+        lookup_result = lookup_impl(
+            request=request,
+            adapters=adapters,
+        )
+    except Exception as exc:
+        if _is_mcp_unavailable_error(exc):
+            return OfficialDocsAnswerResult(
+                library=request.library,
+                answer=OFFICIAL_DOCS_LOOKUP_UNAVAILABLE_ANSWER,
+                lookup_result=OfficialDocsLookupResult(
+                    library=request.library,
+                    documents=[],
+                ),
+                usage=None,
+            )
+        raise RuntimeError(f"Official docs lookup failed: {exc}") from exc
+
+    try:
+        return summarize_official_docs_answer(
+            request=request,
+            lookup_result=lookup_result,
+            chat_model=chat_model,
+            summary_impl=summary_impl,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Official docs summary failed: {exc}") from exc
+
+
+def _is_mcp_unavailable_error(exc: Exception) -> bool:
+    if isinstance(exc, NotImplementedError):
+        return True
+    if isinstance(exc, RuntimeError) and "Remote MCP not available" in str(exc):
+        return True
+    return False

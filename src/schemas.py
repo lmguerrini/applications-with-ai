@@ -285,4 +285,5 @@ class AnswerResult(BaseModel):
     retrieval: RetrievalResult | None
     answer_sources: list[str]
     tool_result: ToolInvocationResult | None = None
+    official_docs_result: OfficialDocsAnswerResult | None = None
     usage: RequestUsage | None = None

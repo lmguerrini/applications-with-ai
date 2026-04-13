@@ -2,12 +2,12 @@ import json
 
 import pytest
 
-from src.config import Settings
 from src.official_docs_fallback_adapters import (
     lookup_chroma_official_docs,
     lookup_streamlit_official_docs,
 )
 from src.official_docs_mcp_adapters import (
+    REMOTE_MCP_UNAVAILABLE_MESSAGE,
     lookup_langchain_official_docs,
     lookup_openai_official_docs,
 )
@@ -29,85 +29,46 @@ def test_select_official_docs_source_adapter_returns_requested_adapter() -> None
     assert selected_adapter is adapter
 
 
-def test_lookup_langchain_official_docs_returns_normalized_documents() -> None:
+def test_lookup_langchain_official_docs_raises_when_remote_mcp_is_unavailable() -> None:
     request = OfficialDocsLookupRequest(
         query="How should I start a RAG app?",
         library="langchain",
     )
+    called = False
 
     def mcp_call_fn(*, server_url, tool_name, arguments, timeout_seconds):
-        assert server_url == "https://docs.langchain.com/mcp"
-        assert tool_name == "search_docs_by_lang_chain"
-        assert arguments == {"query": "How should I start a RAG app?"}
-        return {
-            "structuredContent": {
-                "docs": [
-                    {
-                        "title": "Build a RAG agent with LangChain",
-                        "link": "https://docs.langchain.com/guides/rag",
-                        "page_content": "Start with a simple retrieval pipeline.",
-                    }
-                ]
-            }
-        }
+        nonlocal called
+        called = True
+        return {}
 
-    result = lookup_langchain_official_docs(
-        request=request,
-        settings=Settings(),
-        mcp_call_fn=mcp_call_fn,
-    )
+    with pytest.raises(NotImplementedError, match=REMOTE_MCP_UNAVAILABLE_MESSAGE):
+        lookup_langchain_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
 
-    assert result.library == "langchain"
-    assert result.documents[0].provider_mode == "official_mcp"
-    assert result.documents[0].title == "Build a RAG agent with LangChain"
-    assert result.documents[0].url == "https://docs.langchain.com/guides/rag"
-    assert result.documents[0].snippets[0].text == "Start with a simple retrieval pipeline."
+    assert called is False
 
 
-def test_lookup_openai_official_docs_returns_normalized_documents() -> None:
+def test_lookup_openai_official_docs_raises_when_remote_mcp_is_unavailable() -> None:
     request = OfficialDocsLookupRequest(
         query="How do streaming responses work?",
         library="openai",
     )
-
-    payload = {
-        "hits": [
-            {
-                "url": "https://developers.openai.com/docs/guides/streaming-responses#chunk",
-                "url_without_anchor": "https://developers.openai.com/docs/guides/streaming-responses",
-                "content": "Use streaming to receive partial response events as they are generated.",
-                "hierarchy": {
-                    "lvl0": "Documentation",
-                    "lvl1": "Streaming responses"
-                }
-            }
-        ]
-    }
+    called = False
 
     def mcp_call_fn(*, server_url, tool_name, arguments, timeout_seconds):
-        assert server_url == "https://developers.openai.com/mcp"
-        assert tool_name == "search_openai_docs"
-        assert arguments == {"query": "How do streaming responses work?"}
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": json.dumps(payload),
-                }
-            ]
-        }
+        nonlocal called
+        called = True
+        return {}
 
-    result = lookup_openai_official_docs(
-        request=request,
-        settings=Settings(),
-        mcp_call_fn=mcp_call_fn,
-    )
+    with pytest.raises(NotImplementedError, match=REMOTE_MCP_UNAVAILABLE_MESSAGE):
+        lookup_openai_official_docs(
+            request=request,
+            mcp_call_fn=mcp_call_fn,
+        )
 
-    assert result.library == "openai"
-    assert result.documents[0].provider_mode == "official_mcp"
-    assert result.documents[0].title == "Streaming responses"
-    assert result.documents[0].url == "https://developers.openai.com/docs/guides/streaming-responses"
-    assert "partial response events" in result.documents[0].snippets[0].text
+    assert called is False
 
 
 def test_lookup_streamlit_official_docs_uses_deterministic_fallback_manifest(tmp_path) -> None:
@@ -219,18 +180,22 @@ def test_lookup_official_docs_documents_rejects_empty_adapter_output() -> None:
         )
 
 
-def test_lookup_openai_official_docs_rejects_malformed_payload() -> None:
+def test_lookup_openai_official_docs_still_raises_remote_unavailable_with_custom_transport() -> None:
     request = OfficialDocsLookupRequest(
         query="How do streaming responses work?",
         library="openai",
     )
+    called = False
 
     def mcp_call_fn(*, server_url, tool_name, arguments, timeout_seconds):
+        nonlocal called
+        called = True
         return {"content": [{"type": "text", "text": "{\"unexpected\": true}"}]}
 
-    with pytest.raises(ValueError, match="returned no usable documents"):
+    with pytest.raises(NotImplementedError, match=REMOTE_MCP_UNAVAILABLE_MESSAGE):
         lookup_openai_official_docs(
             request=request,
-            settings=Settings(),
             mcp_call_fn=mcp_call_fn,
         )
+
+    assert called is False

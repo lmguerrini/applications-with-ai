@@ -1,12 +1,19 @@
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.embeddings.fake import FakeEmbeddings
 
 from src import chains
 from src.config import SUPPORTED_CHAT_MODELS, Settings
 from src.knowledge_base import build_index
+from src.official_docs_service import answer_official_docs_query
 from src.schemas import (
     AnswerResult,
+    OfficialDocsAnswerResult,
+    OfficialDocsDocument,
+    OfficialDocsLookupRequest,
+    OfficialDocsLookupResult,
+    OfficialDocsSnippet,
     RetrievalFilters,
     RetrievalResult,
     RetrievedChunk,
@@ -241,6 +248,150 @@ def test_run_backend_query_routes_retrieval_config_request(monkeypatch) -> None:
     assert result.usage is None
 
 
+def test_maybe_match_official_docs_query_uses_explicit_library_or_openai_default() -> None:
+    assert chains.maybe_match_official_docs_query(
+        "According to LangChain docs, how should I start a small RAG app?"
+    ) == OfficialDocsLookupRequest(
+        query="According to LangChain docs, how should I start a small RAG app?",
+        library="langchain",
+    )
+    assert chains.maybe_match_official_docs_query(
+        "How should I start a small RAG app with LangChain?"
+    ) is None
+    assert chains.maybe_match_official_docs_query(
+        "According to docs, how should I start a small RAG app?"
+    ) == OfficialDocsLookupRequest(
+        query="According to docs, how should I start a small RAG app?",
+        library="openai",
+    )
+    assert chains.maybe_match_official_docs_query(
+        "According to OpenAI and LangChain docs, how should I start a small RAG app?"
+    ) is None
+
+
+def test_run_backend_query_routes_official_docs_after_tools_and_before_rag(monkeypatch) -> None:
+    def fail_answer_query(**kwargs):
+        raise AssertionError("answer_query should not run for an official docs request")
+
+    monkeypatch.setattr(chains, "answer_query", fail_answer_query)
+    requested: dict[str, object] = {}
+
+    def official_docs_answer_fn(*, request, chat_model):
+        requested["request"] = request
+        requested["chat_model"] = chat_model
+        return OfficialDocsAnswerResult(
+            library="langchain",
+            answer="According to the official LangChain docs, start with a simple retrieval pipeline.",
+            lookup_result=OfficialDocsLookupResult(
+                library="langchain",
+                documents=[
+                    OfficialDocsDocument(
+                        title="Build a RAG agent with LangChain",
+                        url="https://docs.langchain.com/guides/rag",
+                        provider_mode="official_mcp",
+                        snippets=[
+                            OfficialDocsSnippet(
+                                text="Start with a simple retrieval pipeline.",
+                                rank=1,
+                            )
+                        ],
+                    )
+                ],
+            ),
+            usage=chains.extract_request_usage(
+                SimpleNamespace(
+                    content="unused",
+                    response_metadata={
+                        "model_name": "gpt-4.1-mini",
+                        "token_usage": {
+                            "prompt_tokens": 12,
+                            "completion_tokens": 6,
+                            "total_tokens": 18,
+                        },
+                    },
+                    usage_metadata=None,
+                ),
+                chat_model=chat_model,
+            ),
+        )
+
+    model = StubChatModel("unused")
+    result = chains.run_backend_query(
+        query="According to LangChain docs, how should I start a small RAG app?",
+        vector_store=object(),
+        chat_model=model,
+        official_docs_answer_fn=official_docs_answer_fn,
+    )
+
+    assert requested["request"] == OfficialDocsLookupRequest(
+        query="According to LangChain docs, how should I start a small RAG app?",
+        library="langchain",
+    )
+    assert requested["chat_model"] is model
+    assert result.answer == (
+        "According to the official LangChain docs, start with a simple retrieval pipeline."
+    )
+    assert result.used_context is False
+    assert result.retrieval is None
+    assert result.answer_sources == []
+    assert result.tool_result is None
+    assert result.official_docs_result is not None
+    assert result.official_docs_result.library == "langchain"
+    assert result.usage is not None
+    assert result.usage.total_tokens == 18
+
+
+def test_run_backend_query_defaults_docs_request_without_library_to_openai(monkeypatch) -> None:
+    def fail_answer_query(**kwargs):
+        raise AssertionError("answer_query should not run for a matched official docs request")
+
+    monkeypatch.setattr(chains, "answer_query", fail_answer_query)
+    requested: dict[str, object] = {}
+
+    def official_docs_answer_fn(*, request, chat_model):
+        requested["request"] = request
+        requested["chat_model"] = chat_model
+        return OfficialDocsAnswerResult(
+            library="openai",
+            answer="According to the official OpenAI docs, use the Responses API streaming events.",
+            lookup_result=OfficialDocsLookupResult(
+                library="openai",
+                documents=[
+                    OfficialDocsDocument(
+                        title="Streaming responses",
+                        url="https://developers.openai.com/docs/guides/streaming-responses",
+                        provider_mode="official_mcp",
+                        snippets=[
+                            OfficialDocsSnippet(
+                                text="Use streaming events to receive partial response output.",
+                                rank=1,
+                            )
+                        ],
+                    )
+                ],
+            ),
+            usage=None,
+        )
+
+    model = StubChatModel("unused")
+    result = chains.run_backend_query(
+        query="According to the docs, how do streaming responses work?",
+        vector_store=object(),
+        chat_model=model,
+        official_docs_answer_fn=official_docs_answer_fn,
+    )
+
+    assert requested["request"] == OfficialDocsLookupRequest(
+        query="According to the docs, how do streaming responses work?",
+        library="openai",
+    )
+    assert requested["chat_model"] is model
+    assert result.official_docs_result is not None
+    assert result.official_docs_result.library == "openai"
+    assert result.retrieval is None
+    assert result.answer_sources == []
+
+
 def test_run_backend_query_keeps_normal_answer_flow(monkeypatch) -> None:
     expected = AnswerResult(
         answer="Grounded answer",
@@ -269,6 +420,117 @@ def test_run_backend_query_keeps_normal_answer_flow(monkeypatch) -> None:
     )
 
     assert result == expected
+
+
+def test_run_backend_query_does_not_route_non_docs_query_to_official_docs(monkeypatch) -> None:
+    expected = AnswerResult(
+        answer="Grounded answer",
+        used_context=True,
+        retrieval=RetrievalResult(
+            rewritten_query="streamlit source display",
+            applied_filters=RetrievalFilters(topic="streamlit"),
+            used_fallback=False,
+            chunks=[],
+            sources=[],
+        ),
+        answer_sources=["source-1"],
+        tool_result=None,
+        usage=None,
+    )
+
+    def fake_answer_query(**kwargs):
+        return expected
+
+    def fail_official_docs_answer_fn(**kwargs):
+        raise AssertionError("official docs answer path should not run without docs intent")
+
+    monkeypatch.setattr(chains, "answer_query", fake_answer_query)
+
+    result = chains.run_backend_query(
+        query="How should I display retrieved sources in a Streamlit chat interface?",
+        vector_store=object(),
+        chat_model=StubChatModel("unused"),
+        official_docs_answer_fn=fail_official_docs_answer_fn,
+    )
+
+    assert result == expected
+
+
+def test_run_backend_query_does_not_route_multi_library_docs_query_to_official_docs(
+    monkeypatch,
+) -> None:
+    expected = AnswerResult(
+        answer="Grounded answer",
+        used_context=True,
+        retrieval=RetrievalResult(
+            rewritten_query="compare langchain openai docs",
+            applied_filters=RetrievalFilters(topic="langchain"),
+            used_fallback=False,
+            chunks=[],
+            sources=[],
+        ),
+        answer_sources=["source-1"],
+        tool_result=None,
+        usage=None,
+    )
+
+    def fake_answer_query(**kwargs):
+        return expected
+
+    def fail_official_docs_answer_fn(**kwargs):
+        raise AssertionError("official docs answer path should not run for multi-library docs")
+
+    monkeypatch.setattr(chains, "answer_query", fake_answer_query)
+
+    result = chains.run_backend_query(
+        query="According to LangChain and OpenAI docs, what is the difference here?",
+        vector_store=object(),
+        chat_model=StubChatModel("unused"),
+        official_docs_answer_fn=fail_official_docs_answer_fn,
+    )
+
+    assert result == expected
+
+
+def test_run_backend_query_returns_graceful_official_docs_result_without_rag_fallback(
+    monkeypatch,
+) -> None:
+    def fail_answer_query(**kwargs):
+        raise AssertionError("answer_query should not run after the official docs path is selected")
+
+    def lookup_impl(*, request, adapters=None):
+        raise RuntimeError("Remote MCP not available")
+
+    def fail_summary_impl(*, request, lookup_result, chat_model):
+        raise AssertionError("summary should not run when MCP is unavailable")
+
+    def official_docs_answer_fn(*, request, chat_model):
+        return answer_official_docs_query(
+            request=request,
+            chat_model=chat_model,
+            lookup_impl=lookup_impl,
+            summary_impl=fail_summary_impl,
+        )
+
+    monkeypatch.setattr(chains, "answer_query", fail_answer_query)
+
+    result = chains.run_backend_query(
+        query="According to OpenAI docs, how do streaming responses work?",
+        vector_store=object(),
+        chat_model=StubChatModel("unused"),
+        official_docs_answer_fn=official_docs_answer_fn,
+    )
+
+    assert result.answer == "Official documentation lookup is not available for this library yet."
+    assert result.used_context is False
+    assert result.retrieval is None
+    assert result.answer_sources == []
+    assert result.tool_result is None
+    assert result.official_docs_result is not None
+    assert result.official_docs_result.library == "openai"
+    assert result.official_docs_result.lookup_result.library == "openai"
+    assert result.official_docs_result.lookup_result.documents == []
+    assert result.usage is None
 
 
 def test_answer_query_uses_no_context_fallback_for_weak_retrieval(tmp_path) -> None:
