@@ -546,7 +546,7 @@ def test_send_mcp_jsonrpc_request_uses_streamable_accept_header_and_parses_plain
         assert timeout == 15.0
         return StubResponse()
 
-    monkeypatch.setattr("src.official_docs_mcp_adapters.urllib_request.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.official_docs_mcp_transport.urllib_request.urlopen", fake_urlopen)
 
     result = send_mcp_jsonrpc_request(
         server_url="https://developers.openai.com/mcp",
@@ -578,7 +578,7 @@ def test_send_mcp_jsonrpc_request_parses_sse_json_body(monkeypatch) -> None:
         assert timeout == 15.0
         return StubResponse()
 
-    monkeypatch.setattr("src.official_docs_mcp_adapters.urllib_request.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.official_docs_mcp_transport.urllib_request.urlopen", fake_urlopen)
 
     result = send_mcp_jsonrpc_request(
         server_url="https://developers.openai.com/mcp",
@@ -605,7 +605,7 @@ def test_send_mcp_jsonrpc_request_rejects_malformed_sse_body(monkeypatch) -> Non
         assert timeout == 15.0
         return StubResponse()
 
-    monkeypatch.setattr("src.official_docs_mcp_adapters.urllib_request.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.official_docs_mcp_transport.urllib_request.urlopen", fake_urlopen)
 
     with pytest.raises(RuntimeError, match="Official docs MCP response was not valid JSON."):
         send_mcp_jsonrpc_request(
