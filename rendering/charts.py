@@ -4,9 +4,15 @@ import altair as alt
 
 
 def _format_cost_metric(value: object) -> str:
-    if isinstance(value, int | float):
-        return f"${value:.6f}"
-    return "n/a"
+    if not isinstance(value, int | float):
+        return "Cost unavailable"
+    if value == 0:
+        return "$0.00"
+    if abs(value) >= 1:
+        return f"${value:,.2f}"
+    if abs(value) >= 0.01:
+        return f"${value:,.4f}"
+    return f"${value:.6f}"
 
 
 def build_response_behavior_chart_rows(

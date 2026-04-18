@@ -28,6 +28,24 @@ from state.session_state import (
 from ui.sidebar import format_kb_status_label, should_show_kb_rebuild_trigger
 
 
+EVALUATION_CASE_COLUMN_LABELS = {
+    "question": "Question",
+    "source_recall": "Source recall",
+    "retrieved_chunks": "Retrieved chunks",
+    "used_fallback": "Used fallback search",
+    "context_match": "Context matched expectation",
+    "keyword_recall": "Keyword recall",
+}
+RECENT_DIAGNOSTICS_COLUMN_LABELS = {
+    "query_preview": "Query preview",
+    "response_type": "Response type",
+    "model": "Model",
+    "source_count": "Source count",
+    "total_tokens": "Total tokens",
+    "estimated_cost_usd": "Estimated cost",
+}
+
+
 def render_analytics_dashboard(
     *,
     settings: Settings,
@@ -54,7 +72,7 @@ def render_analytics_dashboard(
     )
 
     st.markdown("**Overview**")
-    overview_columns = st.columns(5)
+    overview_columns = st.columns((1, 1, 1, 1.7))
     overview_columns[0].metric("Conversation turns", overview["total_conversation_turns"])
     overview_columns[1].metric("LLM-backed requests", overview["llm_backed_request_count"])
     overview_columns[2].metric("Total tokens", overview["total_tokens"])
@@ -62,10 +80,9 @@ def render_analytics_dashboard(
         "Estimated total cost",
         _format_cost_metric(overview["estimated_total_cost_usd"]),
     )
-    with overview_columns[4]:
-        st.caption("Knowledge base")
-        st.write(format_kb_status_label(kb_status).removeprefix("Status: "))
-        st.caption(kb_status.summary)
+    st.markdown("**Knowledge base**")
+    st.write(format_kb_status_label(kb_status).removeprefix("Status: "))
+    st.caption(kb_status.summary)
     st.caption(kb_status.detail)
 
     st.divider()
@@ -199,29 +216,45 @@ def render_analytics_dashboard(
             summary_columns = st.columns(3)
             summary_columns[0].metric(
                 "Source recall",
-                f"{evaluation_summary_metrics['average_source_recall']:.4f}",
+                _format_percent_metric(
+                    evaluation_summary_metrics["average_source_recall"]
+                ),
             )
             summary_columns[1].metric(
                 "Keyword recall",
-                f"{evaluation_summary_metrics['average_keyword_recall']:.4f}",
+                _format_percent_metric(
+                    evaluation_summary_metrics["average_keyword_recall"]
+                ),
             )
             summary_columns[2].metric(
                 "Context match",
-                f"{evaluation_summary_metrics['context_match_rate']:.4f}",
+                _format_percent_metric(evaluation_summary_metrics["context_match_rate"]),
             )
 
             summary_columns = st.columns(3)
             summary_columns[0].metric(
                 "No-context fallback rate",
-                f"{evaluation_summary_metrics['no_context_fallback_rate']:.4f}",
+                _format_percent_metric(
+                    evaluation_summary_metrics["no_context_fallback_rate"]
+                ),
             )
             summary_columns[1].metric(
                 "Sources-present rate",
-                f"{evaluation_summary_metrics['sources_present_rate_when_context_used']:.4f}",
+                _format_percent_metric(
+                    evaluation_summary_metrics[
+                        "sources_present_rate_when_context_used"
+                    ]
+                ),
             )
             summary_columns[2].metric(
                 "Case count",
                 evaluation_summary_metrics["case_count"],
+            )
+            interpretation = build_evaluation_interpretation(
+                evaluation_summary_metrics
+            )
+            st.info(
+                f"{interpretation['status']}: {interpretation['summary']}"
             )
 
             evaluation_case_rows = build_evaluation_case_rows(
@@ -230,18 +263,170 @@ def render_analytics_dashboard(
             )
             if evaluation_case_rows:
                 st.dataframe(
-                    evaluation_case_rows,
+                    format_evaluation_case_rows_for_display(evaluation_case_rows),
                     hide_index=True,
                     use_container_width=True,
                 )
 
     st.divider()
-    st.markdown("**Recent Diagnostics**")
+    st.markdown("**Recent Request Diagnostics**")
+    st.caption(
+        "Latest requests first. Use this table to spot response type, source usage, "
+        "token usage, and estimated cost for recent turns."
+    )
     if recent_diagnostics_rows:
         st.dataframe(
-            recent_diagnostics_rows,
+            format_recent_diagnostics_rows_for_display(recent_diagnostics_rows),
             hide_index=True,
             use_container_width=True,
         )
     else:
         st.info("No recent turn diagnostics are available yet.")
+
+
+def _format_percent_metric(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "Unavailable"
+    return f"{float(value) * 100:.1f}%"
+
+
+def _format_optional_number(value: object) -> str:
+    if isinstance(value, int | float):
+        return str(value)
+    return "No tracked usage"
+
+
+def _format_optional_model(value: object) -> str:
+    if isinstance(value, str) and value != "n/a":
+        return value
+    return "No LLM"
+
+
+def _format_bool_label(value: object) -> str:
+    return "Yes" if value is True else "No"
+
+
+def format_evaluation_case_rows_for_display(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            EVALUATION_CASE_COLUMN_LABELS["question"]: row["question"],
+            EVALUATION_CASE_COLUMN_LABELS["source_recall"]: _format_percent_metric(
+                row["source_recall"]
+            ),
+            EVALUATION_CASE_COLUMN_LABELS["retrieved_chunks"]: row["retrieved_chunks"],
+            EVALUATION_CASE_COLUMN_LABELS["used_fallback"]: _format_bool_label(
+                row["used_fallback"]
+            ),
+            EVALUATION_CASE_COLUMN_LABELS["context_match"]: _format_bool_label(
+                row["context_match"]
+            ),
+            EVALUATION_CASE_COLUMN_LABELS["keyword_recall"]: _format_percent_metric(
+                row["keyword_recall"]
+            ),
+        }
+        for row in rows
+    ]
+
+
+def format_recent_diagnostics_rows_for_display(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            RECENT_DIAGNOSTICS_COLUMN_LABELS["query_preview"]: row["query_preview"],
+            RECENT_DIAGNOSTICS_COLUMN_LABELS["response_type"]: row["response_type"],
+            RECENT_DIAGNOSTICS_COLUMN_LABELS["model"]: _format_optional_model(
+                row["model"]
+            ),
+            RECENT_DIAGNOSTICS_COLUMN_LABELS["source_count"]: row["source_count"],
+            RECENT_DIAGNOSTICS_COLUMN_LABELS["total_tokens"]: _format_optional_number(
+                row["total_tokens"]
+            ),
+            RECENT_DIAGNOSTICS_COLUMN_LABELS["estimated_cost_usd"]: _format_cost_metric(
+                row["estimated_cost_usd"]
+            ),
+        }
+        for row in rows
+    ]
+
+
+def build_evaluation_interpretation(
+    metrics: dict[str, int | float],
+) -> dict[str, str]:
+    source_recall = float(metrics.get("average_source_recall", 0.0))
+    keyword_recall = float(metrics.get("average_keyword_recall", 0.0))
+    context_match = float(metrics.get("context_match_rate", 0.0))
+    case_count = int(metrics.get("case_count", 0))
+    core_signals = {
+        "source recall": source_recall,
+        "keyword recall": keyword_recall,
+        "context match": context_match,
+    }
+    strong_threshold = 0.8
+    minimum_threshold = 0.6
+
+    if case_count == 0:
+        status = "Needs improvement"
+        summary = "No evaluation cases were included in the latest snapshot."
+    elif all(value >= strong_threshold for value in core_signals.values()):
+        status = "Good"
+        summary = (
+            "Core evaluation signals are strong; no tracked signal is below "
+            f"the {_format_percent_metric(strong_threshold)} target."
+        )
+    elif all(value >= minimum_threshold for value in core_signals.values()):
+        status = "Acceptable"
+        weak_signals = [
+            label
+            for label, value in core_signals.items()
+            if value < strong_threshold
+        ]
+        summary = (
+            f"{_format_label_list(weak_signals)} "
+            f"{_plural_verb(weak_signals)} below the "
+            f"{_format_percent_metric(strong_threshold)} strong-result target, "
+            "but all core signals remain in the acceptable range."
+        )
+    else:
+        status = "Needs improvement"
+        weak_signals = [
+            label
+            for label, value in core_signals.items()
+            if value < minimum_threshold
+        ]
+        summary = (
+            f"Prioritize {_format_label_list(weak_signals, capitalize=False)}; "
+            f"{_plural_pronoun(weak_signals)} {_plural_verb(weak_signals)} below "
+            f"the {_format_percent_metric(minimum_threshold)} minimum acceptable "
+            "threshold."
+        )
+
+    return {
+        "status": status,
+        "summary": (
+            f"{summary} Source recall {_format_percent_metric(source_recall)}, "
+            f"keyword recall {_format_percent_metric(keyword_recall)}, "
+            f"context match {_format_percent_metric(context_match)} across "
+            f"{case_count} cases."
+        ),
+    }
+
+
+def _format_label_list(labels: list[str], *, capitalize: bool = True) -> str:
+    if not labels:
+        return "No tracked signal"
+    if len(labels) == 1:
+        text = labels[0]
+    else:
+        text = ", ".join(labels[:-1]) + f" and {labels[-1]}"
+    return text.capitalize() if capitalize else text
+
+
+def _plural_verb(labels: list[str]) -> str:
+    return "is" if len(labels) == 1 else "are"
+
+
+def _plural_pronoun(labels: list[str]) -> str:
+    return "it" if len(labels) == 1 else "they"
