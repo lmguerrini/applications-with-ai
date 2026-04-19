@@ -9,7 +9,8 @@ from rendering.response_labels import (
     get_response_type_label,
 )
 from rendering.structured_display import (
-    format_source_display,
+    format_grouped_source_section_label,
+    group_source_displays,
     render_tool_result_fields,
 )
 from ui.display_payloads import (
@@ -76,13 +77,13 @@ def render_latest_turn() -> None:
                             st.write(f"- {snippet}")
             if turn["sources"]:
                 with st.expander("Sources"):
-                    for source in turn["sources"]:
-                        source_display = format_source_display(source)
+                    for source_display in group_source_displays(turn["sources"]):
                         if source_display["parse_failed"]:
                             st.write(source_display["raw_source"])
                             continue
 
                         st.markdown(f"**{source_display['title']}**")
+                        st.caption(format_grouped_source_section_label(source_display))
                         if source_display["metadata_fragments"]:
                             st.caption(" | ".join(source_display["metadata_fragments"]))
                         if source_display["source_path"] is not None:
