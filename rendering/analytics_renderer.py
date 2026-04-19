@@ -215,16 +215,19 @@ def render_analytics_dashboard(
                 _format_percent_metric(
                     evaluation_summary_metrics["average_source_recall"]
                 ),
+                help="How often the expected source was retrieved.",
             )
             summary_columns[1].metric(
                 "Keyword recall",
                 _format_percent_metric(
                     evaluation_summary_metrics["average_keyword_recall"]
                 ),
+                help="How often expected answer terms appeared.",
             )
             summary_columns[2].metric(
                 "Context match",
                 _format_percent_metric(evaluation_summary_metrics["context_match_rate"]),
+                help="How often answers used context as expected.",
             )
 
             summary_columns = st.columns(3)
@@ -233,6 +236,7 @@ def render_analytics_dashboard(
                 _format_percent_metric(
                     evaluation_summary_metrics["no_context_fallback_rate"]
                 ),
+                help="How often the assistant said it lacked context.",
             )
             summary_columns[1].metric(
                 "Sources-present rate",
@@ -241,11 +245,29 @@ def render_analytics_dashboard(
                         "sources_present_rate_when_context_used"
                     ]
                 ),
+                help="How often context-based answers showed sources.",
             )
             summary_columns[2].metric(
                 "Case count",
                 evaluation_summary_metrics["case_count"],
             )
+            st.caption(
+                "Evaluation is based on a small set of curated test cases and "
+                "may not fully represent real-world performance."
+            )
+            no_context_fallback_rate = float(
+                evaluation_summary_metrics["no_context_fallback_rate"]
+            )
+            if no_context_fallback_rate > 0.5:
+                st.warning(
+                    "High fallback rate: the assistant very often cannot find "
+                    "relevant knowledge-base context."
+                )
+            elif no_context_fallback_rate > 0.3:
+                st.warning(
+                    "High fallback rate: the assistant often cannot find relevant "
+                    "knowledge-base context."
+                )
             interpretation = build_evaluation_interpretation(
                 evaluation_summary_metrics
             )
