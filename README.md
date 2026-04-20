@@ -1,16 +1,16 @@
 # LangChain RAG Assistant
 
-Domain-focused Streamlit assistant for designing, debugging, and understanding LangChain-based RAG applications that use Chroma and OpenAI.
+LangChain RAG assistant with a Streamlit UI and Chroma vector store, supporting tool-based workflows, evaluation, analytics, and MCP-compatible documentation routing.
 
 ![App preview](docs/app_preview.png)
 
 It combines:
-- local knowledge-base RAG
-- official-documentation answer routing
+- local knowledge base RAG
+- official-docs answer routing
 - deterministic tool calling
 - Chroma vector search
 - Streamlit chat and analytics UX
-- runnable evaluation and MCP integrations
+- runnable evaluation workflow and MCP integrations
 
 ## Domain and Use Case
 
@@ -20,7 +20,7 @@ It helps with:
 - retrieval and chunking decisions
 - Chroma persistence and rebuild workflows
 - Streamlit chat and session-state patterns
-- official documentation lookups for supported libraries
+- official-docs lookups for supported libraries
 - practical tool-assisted tasks such as cost estimation and debugging guidance
 
 It is not intended to be:
@@ -39,7 +39,7 @@ It is not intended to be:
 ├── requirements.txt                     # Python dependency list
 ├── pytest.ini                           # pytest configuration for local test runs
 ├── data/                                # Local runtime and content assets
-│   ├── raw/                             # Markdown knowledge-base documents used for indexing
+│   ├── raw/                             # Markdown knowledge base documents used for indexing
 │   ├── eval/                            # Evaluation cases for the custom RAG evaluation workflow
 │   ├── official_docs/                   # Curated fallback manifest for official-docs lookups
 │   └── chroma_db/                       # Persistent local Chroma database generated after indexing
@@ -55,7 +55,7 @@ It is not intended to be:
 │   ├── chains.py                        # Main request routing and answer orchestration
 │   ├── config.py                        # Environment-backed application settings
 │   ├── evaluation.py                    # Runnable evaluation workflow and report formatting
-│   ├── kb_status.py                     # Knowledge-base freshness and manifest checks
+│   ├── kb_status.py                     # Knowledge base freshness and manifest checks
 │   ├── knowledge_base.py                # Markdown loading, chunking, and Chroma indexing
 │   ├── llm_response_utils.py            # Shared LLM response text and usage extraction helpers
 │   ├── logger.py                        # Application logging configuration
@@ -145,13 +145,13 @@ tab orchestration, and high-level request flow. Supporting code is split across:
 
 The runtime behavior is organized around four main paths:
 
-1. **Local KB RAG**
+1. **Local knowledge base RAG**
    - markdown corpus in `data/raw/`
    - OpenAI embeddings
    - Chroma vector store
    - query rewriting and metadata-aware retrieval in `src/retrieval.py`
    - grounded answer generation through LangChain/OpenAI with separated system, query, context, and source messages
-   - streaming responses for grounded KB answers
+   - streaming responses for grounded knowledge base answers
 
 2. **Official docs answer flow**
    - explicit docs-intent routing in `src/chains.py`
@@ -170,7 +170,7 @@ The runtime behavior is organized around four main paths:
 4. **UI, observability, and evaluation**
    - Streamlit chat + analytics tabs rendered through `rendering/` and `ui/`
    - session usage/cost tracking
-   - KB freshness and rebuild visibility
+   - knowledge base freshness and rebuild visibility
    - grouped source display with chunk-index transparency
    - export flows
    - runnable evaluation workflow and dashboard interpretation in `src/evaluation.py` and `rendering/analytics_renderer.py`
@@ -185,7 +185,7 @@ The runtime behavior is organized around four main paths:
 - Query rewriting and metadata filter inference for more structured retrieval
 - Grounded answers with visible sources and safe no-context fallback behavior
 - Message-separated prompt construction for system rules, user query, retrieved context, and source metadata
-- Streaming answer display for grounded KB responses
+- Streaming answer display for grounded knowledge base responses
 
 ### 2. Tool calling
 
@@ -201,7 +201,7 @@ Each tool is relevant to building or debugging LangChain/Chroma/Streamlit RAG ap
 
 - Narrow domain: LangChain-based RAG app development
 - Focused prompts and domain-boundary behavior
-- Focused local corpus and official-docs routing
+- Focused local corpus and official documentation routing
 - Relevant security measures:
   - domain-limited prompting
   - safe no-context fallback
@@ -225,53 +225,63 @@ Each tool is relevant to building or debugging LangChain/Chroma/Streamlit RAG ap
 - Streamlit interface with separate Chat and Analytics tabs
 - Visible sources for grounded answers
 - Source entries grouped by document, with relevant chunk indices shown inline
-- readable tool-result presentation
-- official-docs result display
-- progress/status indicators during request handling and KB rebuilds
+- Structured and readable tool-result presentation
+- Official docs result display
+- Progress/status indicators during request handling and knowledge base rebuilds
+
+## Example Outputs
+
+Depending on the request route, the user sees:
+
+- **Grounded knowledge base answer**: a domain-scoped answer based on retrieved local documents, with grouped source entries and relevant chunk indices.
+- **Official docs answer**: an answer constrained to official documentation evidence, with official-docs sources shown when available.
+- **Tool result**: a readable deterministic result for supported tool requests, such as cost estimation, stack-error diagnosis, or retrieval-configuration guidance.
+- **No-context fallback**: a short fallback response when the app does not have enough relevant in-domain context to answer safely.
+
+## Request Flow 
+
+1. The user submits a query in the Chat tab.
+2. The app validates the input, applies rate limiting, and classifies the request.
+3. The router selects the knowledge base, official-docs, tool, or fallback path.
+4. The selected path retrieves Chroma context, looks up official-docs evidence, runs a deterministic tool, or returns a safe fallback.
+5. The UI renders the answer, tool result, sources, or fallback state.
+6. Session analytics update response type, token/cost usage, source visibility, and related diagnostics.
 
 ## Extra Features
 
-These are additional implemented capabilities beyond the core app flow.
+These are additional implemented capabilities beyond the core app flow:
 
-### Easy
-
-- Conversation history
-- Interactive help / chatbot guide
-- Source citations in responses
-- Conversation export functionality
-
-### Medium
-
-- Multi-model support within OpenAI chat models
-- Token usage and cost display
-- Tool-result visualization
-- Conversation export in multiple formats: Markdown, JSON, CSV, PDF
-- Advanced caching strategies for app resources and exports
-- Use of MCP-compatible documentation sources for official-docs retrieval
-
-### Hard
-
-- Advanced analytics dashboard
-- Tools implemented as MCP servers
-- Runnable evaluation of the RAG system
+- Conversation history: stored in Streamlit session state and reused across turns
+- Interactive help: rendered as app guidance for common chat, tool, docs, and evaluation workflows
+- Source citations: attached to grounded answers and grouped by source document
+- Conversation export: generated from chat history in Markdown, JSON, CSV, and PDF formats
+- Multi-model support: selected through configured OpenAI chat-model settings
+- Token and cost tracking: computed per request and aggregated in the analytics dashboard
+- Tool-result visualization: rendered through structured Streamlit display helpers
+- Resource and export caching: handled through app service and rendering helpers
+- Official-docs retrieval through MCP-compatible sources: routed through the official-docs service with local fallbacks
+- Analytics dashboard: rendered from session metrics, response types, usage data, and evaluation snapshots
+- MCP-based tools: exposed through local MCP servers for project and documentation lookups
+- Runnable evaluation: executed from `src/evaluation.py` against the curated evaluation dataset
 
 ## Analytics and Evaluation
 
 ### Analytics dashboard
 
-![Token Model Usage](docs/token_model_usage.png)
 ![Response Behavior](docs/response_behavior.png)
 
 The Analytics tab surfaces:
 - response-type breakdowns
 - readable token and cost totals
 - model usage visibility
-- KB freshness / rebuild state
+- knowledge base freshness / rebuild state
 - recent-turn diagnostics
 - evaluation snapshot visibility
 - evaluation interpretation with concise status text
 - fallback-rate warnings when no-context fallback is common
 - grouped source display behavior in the chat UI, including relevant chunk indices
+
+![Token Model Usage](docs/token_model_usage.png)
 
 ### Evaluation workflow
 
@@ -286,40 +296,50 @@ It evaluates:
 
 The evaluation dataset lives in `data/eval/eval_cases.json`.
 
+![Evaluation Snapshot](docs/evaluation.png)
+
 On the current curated evaluation set, the latest implementation reaches perfect
 aggregate results for source recall, keyword recall, context-match rate,
-no-context fallback behavior, and source presence. This is useful as a regression
-signal, but it is still a small curated dataset and does not guarantee complete
-real-world generalization.
+no-context fallback behavior, and source presence. Treat this as a regression
+and sanity-check signal for expected project behavior, not as a full benchmark
+or evidence of complete real-world generalization.
 
 The Analytics tab presents these results with metric tooltips, interpretation
 text, and fallback warnings so the snapshot is easier to read without changing
 the underlying evaluation scoring.
 
-## MCP Work
+## MCP Integration
 
 The project includes both MCP consumption and MCP exposure:
 
 - official-docs answer flow uses MCP-compatible documentation lookups where appropriate
 - LangChain official-docs lookup can fall back to the curated local manifest when the remote MCP path is unavailable
-- Streamlit and Chroma official-docs lookups use deterministic local fallback entries
+- Streamlit and Chroma official docs lookups use deterministic local fallback entries
 - fallback coverage is limited to the entries present in `data/official_docs/source_manifest.json`
 - local project tools are exposed through a project-tools MCP server
 
 This keeps MCP support separate from the main chat flow architecture.
 
-## Suggested Demo Flow
+## Quick Demo (Showcase)
 
-A quick way to explore the app is:
+A quick way to demonstrate the different system behaviors:
 
-1. Build the KB with `python build_index.py`.
+1. Build the knowledge base with `python build_index.py`.
 2. Start the app with `streamlit run app.py`.
-3. Ask a grounded KB question:
-   - `How should I persist and rebuild the Chroma index locally?`
-4. Ask an official docs question:
-   - `According to the LangChain docs, how should I start a small RAG application?`
-5. Ask a tool question:
-   - `Estimate OpenAI cost for model gpt-4.1-mini with 1000 input tokens, 500 output tokens, and 3 calls`
-6. Ask an out-of-scope question to show the safe fallback:
-   - `What is the capital of France?`
-7. Open the Analytics tab and run the evaluation snapshot.
+
+Then test each response type:
+
+- Grounded KB:
+  `How should I persist and rebuild the Chroma index locally?`
+
+- Official docs:
+  `According to the LangChain docs, how should I start a small RAG application?`
+
+- Tool:
+  `Estimate OpenAI cost for model gpt-4.1-mini with 1000 input tokens, 500 output tokens, and 3 calls`
+
+- Fallback:
+  `What is the capital of France?`
+
+Finally:
+- Open the Analytics tab and run the evaluation snapshot.
